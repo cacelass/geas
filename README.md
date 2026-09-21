@@ -56,6 +56,10 @@ uv pip install -e ".[dev]"
 geas init "Mi Org"                # crear organización + roles por defecto
 geas org list                     # listar organizaciones
 geas dept list <org_id>           # listar departamentos
+geas dept create <org_id> "Backend"
+geas user create <org_id> "Ana" ana@example.com
+geas agent create <org_id> "Codex" openai gpt-5
+geas repo create <org_id> "mi-repo" github https://github.com/org/mi-repo
 geas ticket create <org_id> "Título"
 geas ticket list <org_id>
 geas ticket show <ticket_id>
@@ -65,6 +69,21 @@ geas resource list <repo_id>      # ver recursos y sus locks
 geas lock show <resource_id>      # ver lock de un recurso
 geas events <org_id>              # event log
 geas audit <org_id>               # log de auditoría
+
+# Trabajo desde un repositorio registrado
+geas work init .                  # registrar repo y crear .orchestrator/config.yml
+geas work status .                # comprobar que el entorno está listo
+geas work sync .                  # estado de Git y tickets del repositorio
+geas work tasks <actor_id>        # tickets disponibles para un actor
+geas work start <ticket_id>       # reclamar e iniciar un ticket
+geas work finish <ticket_id>      # registrar commit y liberar locks
+geas work diff <ticket_id>        # cambios entre los commits del ticket
+geas work rollback <ticket_id>    # revertir el trabajo de un ticket
+
+# Herramientas MCP para agentes
+geas mcp list
+geas mcp create_ticket --title "Implementar X"
+geas mcp get_available_tasks
 ```
 
 ## Concurrencia

@@ -41,12 +41,13 @@ class RepoStatus:
 @dataclass
 class DiffResult:
     """Diferencia entre dos commits (spec §11)."""
+
     base_sha: str
     target_sha: str
     files_changed: list[str]
     additions: int
     deletions: int
-    patch: str          # diff completo
+    patch: str  # diff completo
 
 
 class GitProvider(ABC):
@@ -77,7 +78,9 @@ class GitProvider(ABC):
     def merge(self, branch: str) -> bool: ...
 
     @abstractmethod
-    def get_commits(self, since: str | None = None, limit: int = 10) -> list[CommitInfo]: ...
+    def get_commits(
+        self, since: str | None = None, limit: int = 10
+    ) -> list[CommitInfo]: ...
 
     @abstractmethod
     def get_head(self) -> str: ...
@@ -96,7 +99,7 @@ class LocalGitProvider(GitProvider):
         cmd = ["git"]
         if self.repo_path:
             cmd += ["-C", self.repo_path]
-        return subprocess.run(cmd + args, capture_output=True, text=True)
+        return subprocess.run(cmd + args, capture_output=True, text=True, check=False)
 
     # ─── Operaciones ───────────────────────────────────────────────────
 
@@ -133,9 +136,12 @@ class LocalGitProvider(GitProvider):
                 modified.append(line[3:])
         clean = not untracked and not modified
         return RepoStatus(
-            branch=branch, clean=clean,
-            ahead=ahead, behind=behind,
-            untracked=untracked, modified=modified,
+            branch=branch,
+            clean=clean,
+            ahead=ahead,
+            behind=behind,
+            untracked=untracked,
+            modified=modified,
         )
 
     def create_branch(self, name: str) -> bool:
@@ -161,7 +167,9 @@ class LocalGitProvider(GitProvider):
         # Intentar GitHub CLI
         r = subprocess.run(
             ["gh", "pr", "create", "--title", title, "--base", base],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -171,7 +179,9 @@ class LocalGitProvider(GitProvider):
         r = self._run(["merge", branch])
         return r.returncode == 0
 
-    def get_commits(self, since: str | None = None, limit: int = 10) -> list[CommitInfo]:
+    def get_commits(
+        self, since: str | None = None, limit: int = 10
+    ) -> list[CommitInfo]:
         args = ["log", f"-{limit}", "--format=%H\t%s\t%an\t%aI"]
         if since:
             args = ["log", f"-{limit}", "--format=%H\t%s\t%an\t%aI", since + "..HEAD"]
@@ -180,10 +190,14 @@ class LocalGitProvider(GitProvider):
         for line in r.stdout.splitlines():
             parts = line.split("\t")
             if len(parts) >= 4:
-                commits.append(CommitInfo(
-                    sha=parts[0], message=parts[1],
-                    author=parts[2], timestamp=parts[3],
-                ))
+                commits.append(
+                    CommitInfo(
+                        sha=parts[0],
+                        message=parts[1],
+                        author=parts[2],
+                        timestamp=parts[3],
+                    )
+                )
         return commits
 
     def get_head(self) -> str:
@@ -231,7 +245,7 @@ def get_provider(provider: str = "local") -> GitProvider:
     """Factory: devuelve el proveedor según el nombre."""
     providers = {
         "local": LocalGitProvider,
-        "github": LocalGitProvider,   # MVP: GitHub vía CLI de git + gh
+        "github": LocalGitProvider,  # MVP: GitHub vía CLI de git + gh
         "gitlab": LocalGitProvider,
         "bitbucket": LocalGitProvider,
     }

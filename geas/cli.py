@@ -28,12 +28,8 @@ from pathlib import Path
 from geas.models import (
     DEFAULT_ROLES,
     Agent,
-    AuditLog,
     Department,
-    Event,
     Organization,
-    Resource,
-    ResourceLock,
     Repository,
     Role,
     Ticket,
@@ -61,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_init(storage, args)
         elif cmd == "work":
             from geas.work import main as work_main
+
             return work_main(args)
         elif cmd == "mcp":
             return _cmd_mcp(storage, args)
@@ -146,8 +143,9 @@ def _cmd_dept(storage: Storage, args: list[str]) -> int:
             print("Uso: geas dept create <org_id> <name> [parent_dept_id]")
             return 1
         parent = args[3] if len(args) > 3 else None
-        d = Department(organization_id=args[1], name=args[2],
-                       parent_department_id=parent)
+        d = Department(
+            organization_id=args[1], name=args[2], parent_department_id=parent
+        )
         storage.create_department(d)
         print(f"Departamento creado: {d.id[:8]}  {d.name}")
         return 0
@@ -179,8 +177,13 @@ def _cmd_user(storage: Storage, args: list[str]) -> int:
         email = args[3] if len(args) > 3 else ""
         dept_id = args[4] if len(args) > 4 else None
         role_id = args[5] if len(args) > 5 else None
-        u = User(organization_id=args[1], name=args[2], email=email,
-                 department_id=dept_id, role_id=role_id)
+        u = User(
+            organization_id=args[1],
+            name=args[2],
+            email=email,
+            department_id=dept_id,
+            role_id=role_id,
+        )
         storage.create_user(u)
         print(f"Usuario creado: {u.id[:8]}  {u.name}")
         return 0
@@ -210,8 +213,13 @@ def _cmd_agent(storage: Storage, args: list[str]) -> int:
             print("Uso: geas agent create <org_id> <name> <provider> <model> [dept_id]")
             return 1
         dept_id = args[5] if len(args) > 5 else None
-        a = Agent(organization_id=args[1], name=args[2],
-                  provider=args[3], model=args[4], department_id=dept_id)
+        a = Agent(
+            organization_id=args[1],
+            name=args[2],
+            provider=args[3],
+            model=args[4],
+            department_id=dept_id,
+        )
         storage.create_agent(a)
         print(f"Agente creado: {a.id[:8]}  {a.name} ({args[3]}/{args[4]})")
         return 0
@@ -230,6 +238,7 @@ def _cmd_mcp(storage: Storage, args: list[str]) -> int:
     """
     if not args or args[0] == "list":
         from geas.mcp import TOOLS
+
         print("Herramientas MCP:")
         for tool in TOOLS:
             print(f"  {tool['name']:25} {tool['description']}")
@@ -256,7 +265,8 @@ def _cmd_mcp(storage: Storage, args: list[str]) -> int:
         else:
             i += 1
 
-    from geas.mcp import GeasMcp, TOOL_NAMES
+    from geas.mcp import TOOL_NAMES, GeasMcp
+
     if tool not in TOOL_NAMES:
         print(f"Herramienta desconocida: {tool}", file=sys.stderr)
         print("Usa: geas mcp list", file=sys.stderr)
@@ -264,8 +274,11 @@ def _cmd_mcp(storage: Storage, args: list[str]) -> int:
 
     orgs = storage.list_organizations()
     org_id = orgs[0].id if orgs else ""
-    mcp = GeasMcp(storage, actor_id=params.pop("actor_id", "cli"),
-                  org_id=params.pop("org_id", org_id))
+    mcp = GeasMcp(
+        storage,
+        actor_id=params.pop("actor_id", "cli"),
+        org_id=params.pop("org_id", org_id),
+    )
     result = mcp.call(tool, params)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result["success"] else 1
@@ -294,8 +307,13 @@ def _cmd_repo(storage: Storage, args: list[str]) -> int:
         provider = args[3] if len(args) > 3 else "local"
         url = args[4] if len(args) > 4 else ""
         dept_id = args[5] if len(args) > 5 else None
-        r = Repository(organization_id=args[1], name=args[2],
-                       provider=provider, url=url, department_id=dept_id)
+        r = Repository(
+            organization_id=args[1],
+            name=args[2],
+            provider=provider,
+            url=url,
+            department_id=dept_id,
+        )
         storage.create_repository(r)
         print(f"Repositorio creado: {r.id[:8]}  {r.name}")
         return 0
@@ -331,19 +349,25 @@ def _cmd_ticket(storage: Storage, args: list[str]) -> int:
         if not ticket:
             print(f"Ticket no encontrado: {args[1]}", file=sys.stderr)
             return 1
-        print(json.dumps({
-            "id": ticket.id,
-            "title": ticket.title,
-            "description": ticket.description,
-            "status": ticket.status.value,
-            "priority": ticket.priority,
-            "assigned": ticket.assigned_actor_id,
-            "branch": ticket.branch,
-            "commit_before": ticket.commit_before,
-            "commit_after": ticket.commit_after,
-            "dependencies": ticket.dependencies,
-            "resources": ticket.resources,
-        }, indent=2, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "id": ticket.id,
+                    "title": ticket.title,
+                    "description": ticket.description,
+                    "status": ticket.status.value,
+                    "priority": ticket.priority,
+                    "assigned": ticket.assigned_actor_id,
+                    "branch": ticket.branch,
+                    "commit_before": ticket.commit_before,
+                    "commit_after": ticket.commit_after,
+                    "dependencies": ticket.dependencies,
+                    "resources": ticket.resources,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     elif sub == "create":
@@ -415,14 +439,19 @@ def _cmd_lock(storage: Storage, args: list[str]) -> int:
     if not lock:
         print("Recurso desbloqueado.")
         return 0
-    print(json.dumps({
-        "resource_id": lock.resource_id,
-        "ticket_id": lock.ticket_id,
-        "actor_id": lock.actor_id,
-        "created_at": lock.created_at,
-        "expires_at": lock.expires_at,
-        "last_heartbeat": lock.last_heartbeat,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "resource_id": lock.resource_id,
+                "ticket_id": lock.ticket_id,
+                "actor_id": lock.actor_id,
+                "created_at": lock.created_at,
+                "expires_at": lock.expires_at,
+                "last_heartbeat": lock.last_heartbeat,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -435,7 +464,9 @@ def _cmd_events(storage: Storage, args: list[str]) -> int:
         print("No hay eventos.")
         return 0
     for e in events:
-        print(f"  {e.timestamp[:19]}  {e.event_type:25}  {e.resource_type}:{e.resource_id[:8]}")
+        print(
+            f"  {e.timestamp[:19]}  {e.event_type:25}  {e.resource_type}:{e.resource_id[:8]}"
+        )
     return 0
 
 
@@ -448,7 +479,9 @@ def _cmd_audit(storage: Storage, args: list[str]) -> int:
         print("No hay registros de auditoría.")
         return 0
     for a in logs:
-        print(f"  {a.timestamp[:19]}  {a.actor_id[:8]}  {a.action:25}  {a.resource_type}:{a.resource_id[:8]}")
+        print(
+            f"  {a.timestamp[:19]}  {a.actor_id[:8]}  {a.action:25}  {a.resource_type}:{a.resource_id[:8]}"
+        )
     return 0
 
 

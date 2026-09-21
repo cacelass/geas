@@ -18,14 +18,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from geas.git import LocalGitProvider
 from geas.models import (
     ResourceLock,
-    Ticket,
     TicketStatus,
 )
 from geas.storage import Storage
@@ -73,7 +71,9 @@ def cmd_init(storage: Storage, args: list[str]) -> int:
     # 1. Detectar repo git
     r = subprocess.run(
         ["git", "-C", str(repo_path), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if r.returncode != 0:
         print("NOT A GIT REPOSITORY", file=sys.stderr)
@@ -82,7 +82,9 @@ def cmd_init(storage: Storage, args: list[str]) -> int:
     # 2. Identificar remote
     r = subprocess.run(
         ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     remote = r.stdout.strip() if r.returncode == 0 else ""
     provider = "local"
@@ -97,13 +99,16 @@ def cmd_init(storage: Storage, args: list[str]) -> int:
     # 3. Buscar la organización — si hay varias, pedirla
     orgs = storage.list_organizations()
     if not orgs:
-        print("No hay organizaciones. Crea una primero: geas init '<nombre>'",
-              file=sys.stderr)
+        print(
+            "No hay organizaciones. Crea una primero: geas init '<nombre>'",
+            file=sys.stderr,
+        )
         return 1
-    org = orgs[0] if len(orgs) == 1 else orgs[0]  # MVP: primera org
+    org = orgs[0]  # MVP: primera org
 
     # 4. Registrar repository
     from geas.models import Repository
+
     repo = Repository(
         organization_id=org.id,
         name=name,
@@ -114,19 +119,22 @@ def cmd_init(storage: Storage, args: list[str]) -> int:
 
     # 5. Generar .orchestrator/config.yml
     ctx = WorkContext(repo_path)
-    ctx.write_config({
-        "organization": org.name,
-        "organization_id": org.id,
-        "department": "",
-        "repository": name,
-        "repository_id": repo.id,
-        "provider": provider,
-        "url": remote,
-        "mcp_url": "",
-    })
+    ctx.write_config(
+        {
+            "organization": org.name,
+            "organization_id": org.id,
+            "department": "",
+            "repository": name,
+            "repository_id": repo.id,
+            "provider": provider,
+            "url": remote,
+            "mcp_url": "",
+        }
+    )
 
     # 6. Generar scripts status.sh / sync.sh / start.sh / finish.sh (§25)
     from geas.scripts import generate_scripts
+
     scripts = generate_scripts(repo_path)
 
     print(f"Repository registrado: {repo.id[:8]} ({name})")
@@ -151,8 +159,10 @@ def cmd_sync(storage: Storage, args: list[str]) -> int:
     # Git sync
     g = LocalGitProvider(path)
     status = g.status()
-    print(f"Git: {status.branch} clean={status.clean} "
-          f"ahead={status.ahead} behind={status.behind}")
+    print(
+        f"Git: {status.branch} clean={status.clean} "
+        f"ahead={status.ahead} behind={status.behind}"
+    )
 
     repo = storage.get_repository(repo_id) if repo_id else None
     if repo is None:
@@ -160,8 +170,11 @@ def cmd_sync(storage: Storage, args: list[str]) -> int:
         return 1
 
     # Estado de tickets del repo
-    tickets = [t for t in storage.list_tickets(repo.organization_id)
-               if t.repository_id == repo_id]
+    tickets = [
+        t
+        for t in storage.list_tickets(repo.organization_id)
+        if t.repository_id == repo_id
+    ]
     for t in tickets:
         print(f"  {t.id[:8]} [{t.status.value:12}] {t.title}")
 
@@ -177,29 +190,57 @@ def cmd_status(storage: Storage, args: list[str]) -> int:
     checks: list[tuple[str, bool, str]] = []
 
     # Git repository
-    r = subprocess.run(["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-                       capture_output=True, text=True)
-    checks.append(("Git repository", r.returncode == 0,
-                   "no es un repo git" if r.returncode else "ok"))
+    r = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    checks.append(
+        (
+            "Git repository",
+            r.returncode == 0,
+            "no es un repo git" if r.returncode else "ok",
+        )
+    )
 
     # Remoto
-    r = subprocess.run(["git", "-C", str(path), "remote", "get-url", "origin"],
-                       capture_output=True, text=True)
-    checks.append(("Remote", r.returncode == 0,
-                   "sin remote origin" if r.returncode else r.stdout.strip()))
+    r = subprocess.run(
+        ["git", "-C", str(path), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    checks.append(
+        (
+            "Remote",
+            r.returncode == 0,
+            "sin remote origin" if r.returncode else r.stdout.strip(),
+        )
+    )
 
     # Config
-    checks.append(("Orchestrator", ctx.exists(),
-                   "falta .orchestrator/config.yml" if not ctx.exists() else "ok"))
+    checks.append(
+        (
+            "Orchestrator",
+            ctx.exists(),
+            "falta .orchestrator/config.yml" if not ctx.exists() else "ok",
+        )
+    )
 
     if as_json:
-        print(json.dumps({
-            "ready": all(ok for _, ok, _ in checks),
-            "checks": [
-                {"name": name, "ok": ok, "detail": detail}
-                for name, ok, detail in checks
-            ],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "ready": all(ok for _, ok, _ in checks),
+                    "checks": [
+                        {"name": name, "ok": ok, "detail": detail}
+                        for name, ok, detail in checks
+                    ],
+                },
+                indent=2,
+            )
+        )
         return 0 if all(ok for _, ok, _ in checks) else 1
 
     for name, ok, detail in checks:
@@ -221,7 +262,7 @@ def cmd_tasks(storage: Storage, args: list[str]) -> int:
       - sus dependencias están resueltas
       - sus recursos están disponibles (no bloqueados por otro ticket)
     """
-    actor_id = args[0] if args else "me"
+    args[0] if args else "me"
     path = args[1] if len(args) > 1 else "."
     ctx = WorkContext(path)
     config = ctx.read_config()
@@ -253,16 +294,20 @@ def cmd_tasks(storage: Storage, args: list[str]) -> int:
                 blocked_by = lock.ticket_id
                 break
         if deps_ok and resources_ok:
-            ready.append({
-                "id": t.id,
-                "title": t.title,
-                "status": t.status.value,
-                "priority": t.priority,
-            })
+            ready.append(
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status.value,
+                    "priority": t.priority,
+                }
+            )
         else:
-            print(f"  {t.id[:8]} SKIPPED: "
-                  f"deps={'OK' if deps_ok else 'PENDING'} "
-                  f"resources={'OK' if resources_ok else 'LOCKED by ' + blocked_by[:8]}")
+            print(
+                f"  {t.id[:8]} SKIPPED: "
+                f"deps={'OK' if deps_ok else 'PENDING'} "
+                f"resources={'OK' if resources_ok else 'LOCKED by ' + blocked_by[:8]}"
+            )
 
     if not ready:
         print("No hay tickets disponibles.")
@@ -295,23 +340,29 @@ def cmd_ticket(storage: Storage, args: list[str]) -> int:
     if not ticket:
         print(f"Ticket no encontrado: {args[0]}", file=sys.stderr)
         return 1
-    print(json.dumps({
-        "id": ticket.id,
-        "title": ticket.title,
-        "description": ticket.description,
-        "status": ticket.status.value,
-        "priority": ticket.priority,
-        "assigned": ticket.assigned_actor_id,
-        "branch": ticket.branch,
-        "commit_before": ticket.commit_before,
-        "commit_after": ticket.commit_after,
-        "dependencies": ticket.dependencies,
-        "resources": ticket.resources,
-        "created_at": ticket.created_at,
-        "started_at": ticket.started_at,
-        "completed_at": ticket.completed_at,
-        "feedback": ticket.feedback,
-    }, indent=2, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "id": ticket.id,
+                "title": ticket.title,
+                "description": ticket.description,
+                "status": ticket.status.value,
+                "priority": ticket.priority,
+                "assigned": ticket.assigned_actor_id,
+                "branch": ticket.branch,
+                "commit_before": ticket.commit_before,
+                "commit_after": ticket.commit_after,
+                "dependencies": ticket.dependencies,
+                "resources": ticket.resources,
+                "created_at": ticket.created_at,
+                "started_at": ticket.started_at,
+                "completed_at": ticket.completed_at,
+                "feedback": ticket.feedback,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -323,7 +374,7 @@ def cmd_start(storage: Storage, args: list[str]) -> int:
         return 1
     ticket_id = args[0]
     path = args[1] if len(args) > 1 else "."
-    ctx = WorkContext(path)
+    WorkContext(path)
 
     ticket = storage.get_ticket(ticket_id)
     if not ticket:
@@ -344,20 +395,23 @@ def cmd_start(storage: Storage, args: list[str]) -> int:
     for res_id in ticket.resources:
         lock = storage.get_lock_for_resource(res_id)
         if lock and lock.ticket_id != ticket.id:
-            print(f"RESOURCE_UNAVAILABLE: locked_by {lock.ticket_id[:8]}",
-                  file=sys.stderr)
+            print(
+                f"RESOURCE_UNAVAILABLE: locked_by {lock.ticket_id[:8]}", file=sys.stderr
+            )
             return 1
 
     # ── acquire locks (TTL 2h + heartbeat) ──
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires = (now + timedelta(hours=2)).isoformat()
     for res_id in ticket.resources:
-        storage.create_lock(ResourceLock(
-            resource_id=res_id,
-            ticket_id=ticket.id,
-            actor_id="me",
-            expires_at=expires,
-        ))
+        storage.create_lock(
+            ResourceLock(
+                resource_id=res_id,
+                ticket_id=ticket.id,
+                actor_id="me",
+                expires_at=expires,
+            )
+        )
         print(f"LOCKED: {res_id[:8]} (TTL 2h)")
 
     # ── record commit_before ──
@@ -378,8 +432,7 @@ def cmd_start(storage: Storage, args: list[str]) -> int:
 def cmd_finish(storage: Storage, args: list[str]) -> int:
     """work finish <id> — §24: commit, push, commit_after, release locks, DONE."""
     if not args:
-        print("Uso: work finish <ticket_id> [path] [commit_message]",
-              file=sys.stderr)
+        print("Uso: work finish <ticket_id> [path] [commit_message]", file=sys.stderr)
         return 1
     ticket_id = args[0]
     path = args[1] if len(args) > 1 else "."
@@ -415,9 +468,9 @@ def cmd_finish(storage: Storage, args: list[str]) -> int:
 
     print(f"FINISH {ticket.id[:8]}")
     print(f"  commit_after: {after}")
-    print(f"  push: OK")
+    print("  push: OK")
     print(f"  locks liberados: {released}")
-    print(f"  status: DONE")
+    print("  status: DONE")
     return 0
 
 
@@ -431,8 +484,9 @@ def cmd_diff(storage: Storage, args: list[str]) -> int:
         print(f"Ticket no encontrado: {args[0]}", file=sys.stderr)
         return 1
     if not ticket.commit_before or not ticket.commit_after:
-        print("El ticket no tiene commit_before/commit_after completos.",
-              file=sys.stderr)
+        print(
+            "El ticket no tiene commit_before/commit_after completos.", file=sys.stderr
+        )
         return 1
 
     repo_path = args[1] if len(args) > 1 else "."
@@ -466,21 +520,26 @@ def cmd_rollback(storage: Storage, args: list[str]) -> int:
 
     # Registrar en auditoría (§11: el rollback es un evento de auditoría)
     from geas.models import AuditLog, Event
-    storage.create_audit(AuditLog(
-        actor_id="me",
-        action="ROLLBACK_COMPLETED",
-        resource_type="ticket",
-        resource_id=ticket.id,
-        metadata={"to_commit": ticket.commit_before},
-    ))
-    storage.create_event(Event(
-        event_type="ROLLBACK_COMPLETED",
-        organization_id=ticket.organization_id,
-        actor_id="me",
-        resource_type="ticket",
-        resource_id=ticket.id,
-        metadata={"to_commit": ticket.commit_before},
-    ))
+
+    storage.create_audit(
+        AuditLog(
+            actor_id="me",
+            action="ROLLBACK_COMPLETED",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"to_commit": ticket.commit_before},
+        )
+    )
+    storage.create_event(
+        Event(
+            event_type="ROLLBACK_COMPLETED",
+            organization_id=ticket.organization_id,
+            actor_id="me",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"to_commit": ticket.commit_before},
+        )
+    )
     return 0 if ok else 1
 
 

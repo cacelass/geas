@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def _uuid() -> str:
@@ -18,7 +18,7 @@ def _uuid() -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ─── Enums ──────────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ class Repository:
     organization_id: str = ""
     department_id: str | None = None
     name: str = ""
-    provider: str = ""          # github, gitlab, bitbucket, self-hosted
+    provider: str = ""  # github, gitlab, bitbucket, self-hosted
     url: str = ""
     default_branch: str = "main"
     visibility: Visibility = Visibility.PRIVATE
@@ -189,13 +189,17 @@ class Ticket:
     completed_at: str | None = None
 
     status: TicketStatus = TicketStatus.FREE
-    priority: int = 0           # 0=baja, 1=media, 2=alta, 3=crítica
+    priority: int = 0  # 0=baja, 1=media, 2=alta, 3=crítica
 
     files: list[str] = field(default_factory=list)
-    resources: list[str] = field(default_factory=list)       # resource ids
+    resources: list[str] = field(default_factory=list)  # resource ids
 
-    dependencies: list[str] = field(default_factory=list)    # ticket ids de los que depende
-    blocked_tickets: list[str] = field(default_factory=list) # tickets que dependen de este
+    dependencies: list[str] = field(
+        default_factory=list
+    )  # ticket ids de los que depende
+    blocked_tickets: list[str] = field(
+        default_factory=list
+    )  # tickets que dependen de este
 
     result: str = ""
     feedback: str = ""
@@ -212,6 +216,7 @@ class Ticket:
 @dataclass
 class TicketDependency:
     """Relación: ticket_id depends_on depends_on_ticket_id."""
+
     id: str = field(default_factory=_uuid)
     ticket_id: str = ""
     depends_on_ticket_id: str = ""
@@ -228,7 +233,7 @@ class Execution:
     actor_id: str = ""
     harness_id: str = ""
 
-    provider: str = ""          # anthropic, openai, etc.
+    provider: str = ""  # anthropic, openai, etc.
     model: str = ""
     model_version: str = ""
 
@@ -242,7 +247,7 @@ class Execution:
     tools_used: list[str] = field(default_factory=list)
     iterations: int = 0
 
-    result: str = ""            # success, failure, cancelled
+    result: str = ""  # success, failure, cancelled
 
 
 # ─── TestResult ─────────────────────────────────────────────────────────────
@@ -254,7 +259,7 @@ class TestResult:
     ticket_id: str = ""
     commit_id: str = ""
     pipeline_id: str = ""
-    status: str = ""            # passed, failed, running
+    status: str = ""  # passed, failed, running
     started_at: str = field(default_factory=_now)
     finished_at: str | None = None
     logs_reference: str = ""
@@ -266,11 +271,12 @@ class TestResult:
 @dataclass
 class Event:
     """Evento del sistema — qué ocurrió."""
+
     id: str = field(default_factory=_uuid)
-    event_type: str = ""        # TICKET_CREATED, RESOURCE_LOCKED, etc.
+    event_type: str = ""  # TICKET_CREATED, RESOURCE_LOCKED, etc.
     organization_id: str = ""
     actor_id: str = ""
-    resource_type: str = ""     # ticket, resource, repository, etc.
+    resource_type: str = ""  # ticket, resource, repository, etc.
     resource_id: str = ""
     timestamp: str = field(default_factory=_now)
     metadata: dict = field(default_factory=dict)
@@ -282,9 +288,10 @@ class Event:
 @dataclass
 class AuditLog:
     """Registro de auditoría — quién hizo qué."""
+
     id: str = field(default_factory=_uuid)
     actor_id: str = ""
-    action: str = ""            # LOCK_RESOURCE, CREATE_TICKET, etc.
+    action: str = ""  # LOCK_RESOURCE, CREATE_TICKET, etc.
     resource_type: str = ""
     resource_id: str = ""
     timestamp: str = field(default_factory=_now)
@@ -324,34 +331,66 @@ DEFAULT_PERMISSIONS = [
 # Roles predefinidos
 DEFAULT_ROLES = {
     "developer": [
-        "ticket:create", "ticket:read", "ticket:update",
-        "resource:read", "resource:lock", "resource:unlock",
-        "repository:read", "repository:write",
-        "dependency:create", "dependency:update",
-        "git:branch", "git:commit", "git:push", "git:pr",
+        "ticket:create",
+        "ticket:read",
+        "ticket:update",
+        "resource:read",
+        "resource:lock",
+        "resource:unlock",
+        "repository:read",
+        "repository:write",
+        "dependency:create",
+        "dependency:update",
+        "git:branch",
+        "git:commit",
+        "git:push",
+        "git:pr",
     ],
     "manager": [
-        "ticket:create", "ticket:read", "ticket:update", "ticket:assign",
-        "resource:read", "resource:lock", "resource:unlock",
-        "repository:read", "repository:write",
-        "department:read", "department:manage",
+        "ticket:create",
+        "ticket:read",
+        "ticket:update",
+        "ticket:assign",
+        "resource:read",
+        "resource:lock",
+        "resource:unlock",
+        "repository:read",
+        "repository:write",
+        "department:read",
+        "department:manage",
         "user:manage",
-        "dependency:create", "dependency:update",
-        "git:branch", "git:commit", "git:push", "git:pr", "git:merge",
-        "audit:read", "execution:read",
+        "dependency:create",
+        "dependency:update",
+        "git:branch",
+        "git:commit",
+        "git:push",
+        "git:pr",
+        "git:merge",
+        "audit:read",
+        "execution:read",
     ],
     "admin": DEFAULT_PERMISSIONS,
     "agent": [
-        "ticket:read", "ticket:start", "ticket:block", "ticket:complete",
-        "resource:read", "resource:lock", "resource:unlock",
-        "repository:read", "repository:write",
-        "git:branch", "git:commit", "git:push", "git:pr",
+        "ticket:read",
+        "ticket:start",
+        "ticket:block",
+        "ticket:complete",
+        "resource:read",
+        "resource:lock",
+        "resource:unlock",
+        "repository:read",
+        "repository:write",
+        "git:branch",
+        "git:commit",
+        "git:push",
+        "git:pr",
         "execution:read",
     ],
     "service_account": [
         "ticket:read",
         "resource:read",
         "repository:read",
-        "audit:read", "execution:read",
+        "audit:read",
+        "execution:read",
     ],
 }

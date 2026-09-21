@@ -17,16 +17,28 @@ from geas.git import LocalGitProvider
 @pytest.fixture
 def repo(tmp_path):
     """Crea un repo git real con un commit base."""
-    subprocess.run(["git", "init", "-b", "main", str(tmp_path)],
-                   capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@geas"],
-                   capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "test"],
-                   capture_output=True, check=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(tmp_path)], capture_output=True, check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@geas"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "test"],
+        capture_output=True,
+        check=True,
+    )
     (tmp_path / "file.txt").write_text("hola\n")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "."], capture_output=True, check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "base"],
-                   capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "."], capture_output=True, check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-m", "base"],
+        capture_output=True,
+        check=True,
+    )
     return tmp_path
 
 
@@ -47,7 +59,9 @@ class TestGitProvider:
     def test_commit_and_head(self, repo):
         g = LocalGitProvider(str(repo))
         (repo / "file.txt").write_text("hola mundo\n")
-        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "."], capture_output=True, check=True
+        )
         commit = g.commit("mejora")
         assert commit is not None
         assert commit.sha == g.get_head()
@@ -63,7 +77,9 @@ class TestGitProvider:
         base = g.get_head()
 
         (repo / "file.txt").write_text("hola mundo\n")
-        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "."], capture_output=True, check=True
+        )
         g.commit("cambio")
         target = g.get_head()
 
@@ -86,7 +102,9 @@ class TestGitProvider:
         before = g.get_head()
 
         (repo / "file.txt").write_text("cambiado\n")
-        subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "."], capture_output=True, check=True
+        )
         g.commit("trabajo")
         after = g.get_head()
         assert before != after

@@ -11,12 +11,9 @@ import pytest
 
 from geas.mcp import GeasMcp
 from geas.models import (
-    Agent,
     Organization,
     Repository,
     Resource,
-    ResourceType,
-    Ticket,
 )
 from geas.storage import Storage
 
@@ -56,8 +53,7 @@ class TestTicketsViaMcp:
 
     def test_create_ticket_with_dependencies(self, mcp, org):
         r1 = mcp.create_ticket(title="Base")
-        r2 = mcp.create_ticket(title="Depende de base",
-                               dependencies=[r1["data"]["id"]])
+        r2 = mcp.create_ticket(title="Depende de base", dependencies=[r1["data"]["id"]])
         assert r2["success"] is True
         deps = mcp.get_dependencies(r2["data"]["id"])
         assert len(deps["data"]["depends_on"]) == 1
@@ -92,8 +88,9 @@ class TestLockViaMcp:
         storage.create_resource(res)
 
         # YT-104 (agente A)
-        r104 = mcp.create_ticket(title="Implementar Chat",
-                                 resources=[res.id], priority=2)
+        r104 = mcp.create_ticket(
+            title="Implementar Chat", resources=[res.id], priority=2
+        )
         t104 = r104["data"]["id"]
 
         # YT-105 (agente B)
@@ -129,9 +126,15 @@ class TestExecutionsViaMcp:
         ticket_id = r["data"]["id"]
         r = mcp.report_execution(
             ticket_id,
-            provider="anthropic", model="claude-4", model_version="1.0",
-            tokens_input=1000, tokens_output=500, cost=0.012,
-            tools_used=["bash", "edit"], iterations=3, result="success",
+            provider="anthropic",
+            model="claude-4",
+            model_version="1.0",
+            tokens_input=1000,
+            tokens_output=500,
+            cost=0.012,
+            tools_used=["bash", "edit"],
+            iterations=3,
+            result="success",
         )
         assert r["success"] is True
         execution = mcp.get_execution(ticket_id)["data"]["executions"]

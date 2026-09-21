@@ -17,10 +17,10 @@ from geas.models import (
     Event,
     Execution,
     Organization,
+    Repository,
     Resource,
     ResourceLock,
     ResourceType,
-    Repository,
     Role,
     Ticket,
     TicketDependency,
@@ -133,6 +133,7 @@ class TestRoles:
     def test_default_roles_exist(self, storage, org):
         # El rol por defecto debe tener todos los permisos
         from geas.models import DEFAULT_PERMISSIONS, DEFAULT_ROLES
+
         assert "admin" in DEFAULT_ROLES
         assert set(DEFAULT_ROLES["admin"]) == set(DEFAULT_PERMISSIONS)
         assert "ticket:manage" not in DEFAULT_PERMISSIONS
@@ -268,12 +269,14 @@ class TestLocks:
         storage.create_ticket(ticket)
 
         for res in (res1, res2):
-            storage.create_lock(ResourceLock(
-                resource_id=res.id,
-                ticket_id=ticket.id,
-                actor_id="agent-1",
-                expires_at="2099-01-01T00:00:00+00:00",
-            ))
+            storage.create_lock(
+                ResourceLock(
+                    resource_id=res.id,
+                    ticket_id=ticket.id,
+                    actor_id="agent-1",
+                    expires_at="2099-01-01T00:00:00+00:00",
+                )
+            )
 
         assert storage.release_locks_for_ticket(ticket.id) == 2
         assert storage.get_lock_for_resource(res1.id) is None
@@ -344,10 +347,12 @@ class TestTickets:
         storage.create_ticket(t1)
         storage.create_ticket(t2)
 
-        storage.create_dependency(TicketDependency(
-            ticket_id=t2.id,
-            depends_on_ticket_id=t1.id,
-        ))
+        storage.create_dependency(
+            TicketDependency(
+                ticket_id=t2.id,
+                depends_on_ticket_id=t1.id,
+            )
+        )
 
         # t2 depende de t1 → no resuelto hasta que t1 esté DONE
         assert storage.are_dependencies_resolved(t2.id) is False
@@ -399,13 +404,16 @@ class TestExecutions:
         storage.create_ticket(t)
 
         from geas.models import TestResult
-        storage.create_test_result(TestResult(
-            ticket_id=t.id,
-            commit_id="b71c4de",
-            pipeline_id="ci-1",
-            status="passed",
-            logs_reference="s3://logs/ci-1",
-        ))
+
+        storage.create_test_result(
+            TestResult(
+                ticket_id=t.id,
+                commit_id="b71c4de",
+                pipeline_id="ci-1",
+                status="passed",
+                logs_reference="s3://logs/ci-1",
+            )
+        )
 
         results = storage.get_test_results(t.id)
         assert len(results) == 1
@@ -417,14 +425,16 @@ class TestExecutions:
 
 class TestEvents:
     def test_create_and_list(self, storage, org):
-        storage.create_event(Event(
-            event_type="TICKET_STARTED",
-            organization_id=org.id,
-            actor_id="agent-1",
-            resource_type="ticket",
-            resource_id="t-1",
-            metadata={"branch": "YT-104"},
-        ))
+        storage.create_event(
+            Event(
+                event_type="TICKET_STARTED",
+                organization_id=org.id,
+                actor_id="agent-1",
+                resource_type="ticket",
+                resource_id="t-1",
+                metadata={"branch": "YT-104"},
+            )
+        )
         events = storage.list_events(org.id)
         assert len(events) == 1
         assert events[0].event_type == "TICKET_STARTED"
@@ -433,13 +443,15 @@ class TestEvents:
 
 class TestAudit:
     def test_create_and_list(self, storage, org):
-        storage.create_audit(AuditLog(
-            actor_id="agent-1",
-            action="LOCK_RESOURCE",
-            resource_type="resource",
-            resource_id="r-1",
-            metadata={"ticket": "YT-104"},
-        ))
+        storage.create_audit(
+            AuditLog(
+                actor_id="agent-1",
+                action="LOCK_RESOURCE",
+                resource_type="resource",
+                resource_id="r-1",
+                metadata={"ticket": "YT-104"},
+            )
+        )
         logs = storage.list_audit(org.id)
         assert len(logs) == 1
         assert logs[0].action == "LOCK_RESOURCE"

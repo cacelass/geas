@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC
 from pathlib import Path
 
 from geas.models import (
@@ -18,13 +19,13 @@ from geas.models import (
     Event,
     Execution,
     Organization,
+    Repository,
     Resource,
     ResourceLock,
-    Repository,
     Role,
+    TestResult,
     Ticket,
     TicketDependency,
-    TestResult,
     User,
 )
 
@@ -74,8 +75,15 @@ class Storage:
         self.conn.execute(
             "INSERT INTO departments (id, organization_id, parent_department_id, "
             "name, description, created_at, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (dept.id, dept.organization_id, dept.parent_department_id or None,
-             dept.name, dept.description, dept.created_at, dept.active),
+            (
+                dept.id,
+                dept.organization_id,
+                dept.parent_department_id or None,
+                dept.name,
+                dept.description,
+                dept.created_at,
+                dept.active,
+            ),
         )
         self.conn.commit()
         return dept
@@ -130,9 +138,16 @@ class Storage:
         self.conn.execute(
             "INSERT INTO users (id, organization_id, name, email, department_id, "
             "role_id, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user.id, user.organization_id, user.name, user.email,
-             user.department_id or None, user.role_id or None,
-             user.active, user.created_at),
+            (
+                user.id,
+                user.organization_id,
+                user.name,
+                user.email,
+                user.department_id or None,
+                user.role_id or None,
+                user.active,
+                user.created_at,
+            ),
         )
         self.conn.commit()
         return user
@@ -157,10 +172,19 @@ class Storage:
             "INSERT INTO agents (id, organization_id, name, provider, model, "
             "model_version, department_id, harness_id, active, configuration, "
             "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (agent.id, agent.organization_id, agent.name, agent.provider,
-             agent.model, agent.model_version, agent.department_id or None,
-             agent.harness_id, agent.active, json.dumps(agent.configuration),
-             agent.created_at),
+            (
+                agent.id,
+                agent.organization_id,
+                agent.name,
+                agent.provider,
+                agent.model,
+                agent.model_version,
+                agent.department_id or None,
+                agent.harness_id,
+                agent.active,
+                json.dumps(agent.configuration),
+                agent.created_at,
+            ),
         )
         self.conn.commit()
         return agent
@@ -185,9 +209,17 @@ class Storage:
             "INSERT INTO repositories (id, organization_id, department_id, name, "
             "provider, url, default_branch, visibility, active) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (repo.id, repo.organization_id, repo.department_id or None,
-             repo.name, repo.provider, repo.url, repo.default_branch,
-             repo.visibility.value, repo.active),
+            (
+                repo.id,
+                repo.organization_id,
+                repo.department_id or None,
+                repo.name,
+                repo.provider,
+                repo.url,
+                repo.default_branch,
+                repo.visibility.value,
+                repo.active,
+            ),
         )
         self.conn.commit()
         return repo
@@ -211,8 +243,13 @@ class Storage:
         self.conn.execute(
             "INSERT INTO resources (id, repository_id, path, type, metadata) "
             "VALUES (?, ?, ?, ?, ?)",
-            (res.id, res.repository_id or None, res.path, res.type.value,
-             json.dumps(res.metadata)),
+            (
+                res.id,
+                res.repository_id or None,
+                res.path,
+                res.type.value,
+                json.dumps(res.metadata),
+            ),
         )
         self.conn.commit()
         return res
@@ -236,8 +273,15 @@ class Storage:
         self.conn.execute(
             "INSERT INTO resource_locks (id, resource_id, ticket_id, actor_id, "
             "created_at, expires_at, last_heartbeat) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (lock.id, lock.resource_id, lock.ticket_id, lock.actor_id,
-             lock.created_at, lock.expires_at, lock.last_heartbeat),
+            (
+                lock.id,
+                lock.resource_id,
+                lock.ticket_id,
+                lock.actor_id,
+                lock.created_at,
+                lock.expires_at,
+                lock.last_heartbeat,
+            ),
         )
         self.conn.commit()
         return lock
@@ -251,9 +295,7 @@ class Storage:
         return _row_to_lock(row) if row else None
 
     def release_lock(self, lock_id: str) -> bool:
-        cur = self.conn.execute(
-            "DELETE FROM resource_locks WHERE id = ?", (lock_id,)
-        )
+        cur = self.conn.execute("DELETE FROM resource_locks WHERE id = ?", (lock_id,))
         self.conn.commit()
         return cur.rowcount > 0
 
@@ -265,8 +307,9 @@ class Storage:
         return cur.rowcount
 
     def heartbeat_lock(self, lock_id: str) -> bool:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        from datetime import datetime
+
+        now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE resource_locks SET last_heartbeat = ? WHERE id = ?",
             (now, lock_id),
@@ -284,16 +327,30 @@ class Storage:
             "resources, dependencies, blocked_tickets, result, feedback, "
             "branch, commit_before, commit_after) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (ticket.id, ticket.title, ticket.description,
-             ticket.organization_id, ticket.department_id or None,
-             ticket.repository_id or None,
-             ticket.creator_id, ticket.assigned_actor_id,
-             ticket.created_at, ticket.started_at, ticket.completed_at,
-             ticket.status.value, ticket.priority,
-             json.dumps(ticket.files), json.dumps(ticket.resources),
-             json.dumps(ticket.dependencies), json.dumps(ticket.blocked_tickets),
-             ticket.result, ticket.feedback, ticket.branch,
-             ticket.commit_before, ticket.commit_after),
+            (
+                ticket.id,
+                ticket.title,
+                ticket.description,
+                ticket.organization_id,
+                ticket.department_id or None,
+                ticket.repository_id or None,
+                ticket.creator_id,
+                ticket.assigned_actor_id,
+                ticket.created_at,
+                ticket.started_at,
+                ticket.completed_at,
+                ticket.status.value,
+                ticket.priority,
+                json.dumps(ticket.files),
+                json.dumps(ticket.resources),
+                json.dumps(ticket.dependencies),
+                json.dumps(ticket.blocked_tickets),
+                ticket.result,
+                ticket.feedback,
+                ticket.branch,
+                ticket.commit_before,
+                ticket.commit_after,
+            ),
         )
         self.conn.commit()
         return ticket
@@ -320,8 +377,9 @@ class Storage:
         return [_row_to_ticket(r) for r in rows]
 
     def update_ticket_status(self, ticket_id: str, status: str) -> bool:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        from datetime import datetime
+
+        now = datetime.now(UTC).isoformat()
         if status == "IN_PROGRESS":
             cur = self.conn.execute(
                 "UPDATE tickets SET status = ?, started_at = COALESCE(started_at, ?) "
@@ -350,10 +408,12 @@ class Storage:
         self.conn.commit()
         return cur.rowcount > 0
 
-    def start_ticket(self, ticket_id: str, commit_before: str = "",
-                     branch: str = "") -> bool:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+    def start_ticket(
+        self, ticket_id: str, commit_before: str = "", branch: str = ""
+    ) -> bool:
+        from datetime import datetime
+
+        now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE tickets SET status = 'IN_PROGRESS', started_at = ?, "
             "commit_before = ?, branch = ? WHERE id = ?",
@@ -362,10 +422,12 @@ class Storage:
         self.conn.commit()
         return cur.rowcount > 0
 
-    def complete_ticket(self, ticket_id: str, commit_after: str = "",
-                        result: str = "") -> bool:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+    def complete_ticket(
+        self, ticket_id: str, commit_after: str = "", result: str = ""
+    ) -> bool:
+        from datetime import datetime
+
+        now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE tickets SET status = 'DONE', completed_at = ?, "
             "commit_after = ?, result = ? WHERE id = ?",
@@ -423,11 +485,23 @@ class Storage:
             "provider, model, model_version, started_at, finished_at, "
             "tokens_input, tokens_output, cost, tools_used, iterations, result) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (exe.id, exe.ticket_id, exe.actor_id, exe.harness_id,
-             exe.provider, exe.model, exe.model_version,
-             exe.started_at, exe.finished_at,
-             exe.tokens_input, exe.tokens_output, exe.cost,
-             json.dumps(exe.tools_used), exe.iterations, exe.result),
+            (
+                exe.id,
+                exe.ticket_id,
+                exe.actor_id,
+                exe.harness_id,
+                exe.provider,
+                exe.model,
+                exe.model_version,
+                exe.started_at,
+                exe.finished_at,
+                exe.tokens_input,
+                exe.tokens_output,
+                exe.cost,
+                json.dumps(exe.tools_used),
+                exe.iterations,
+                exe.result,
+            ),
         )
         self.conn.commit()
         return exe
@@ -446,8 +520,16 @@ class Storage:
             "INSERT INTO test_results (id, ticket_id, commit_id, pipeline_id, "
             "status, started_at, finished_at, logs_reference) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (tr.id, tr.ticket_id, tr.commit_id, tr.pipeline_id,
-             tr.status, tr.started_at, tr.finished_at, tr.logs_reference),
+            (
+                tr.id,
+                tr.ticket_id,
+                tr.commit_id,
+                tr.pipeline_id,
+                tr.status,
+                tr.started_at,
+                tr.finished_at,
+                tr.logs_reference,
+            ),
         )
         self.conn.commit()
         return tr
@@ -466,9 +548,16 @@ class Storage:
             "INSERT INTO events (id, event_type, organization_id, actor_id, "
             "resource_type, resource_id, timestamp, metadata) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (event.id, event.event_type, event.organization_id, event.actor_id,
-             event.resource_type, event.resource_id, event.timestamp,
-             json.dumps(event.metadata)),
+            (
+                event.id,
+                event.event_type,
+                event.organization_id,
+                event.actor_id,
+                event.resource_type,
+                event.resource_id,
+                event.timestamp,
+                json.dumps(event.metadata),
+            ),
         )
         self.conn.commit()
         return event
@@ -487,8 +576,15 @@ class Storage:
         self.conn.execute(
             "INSERT INTO audit_log (id, actor_id, action, resource_type, "
             "resource_id, timestamp, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (audit.id, audit.actor_id, audit.action, audit.resource_type,
-             audit.resource_id, audit.timestamp, json.dumps(audit.metadata)),
+            (
+                audit.id,
+                audit.actor_id,
+                audit.action,
+                audit.resource_type,
+                audit.resource_id,
+                audit.timestamp,
+                json.dumps(audit.metadata),
+            ),
         )
         self.conn.commit()
         return audit
@@ -673,42 +769,58 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 def _row_to_org(row: sqlite3.Row) -> Organization:
     return Organization(
-        id=row["id"], name=row["name"], description=row["description"],
-        created_at=row["created_at"], active=bool(row["active"]),
+        id=row["id"],
+        name=row["name"],
+        description=row["description"],
+        created_at=row["created_at"],
+        active=bool(row["active"]),
     )
 
 
 def _row_to_dept(row: sqlite3.Row) -> Department:
     return Department(
-        id=row["id"], organization_id=row["organization_id"],
+        id=row["id"],
+        organization_id=row["organization_id"],
         parent_department_id=row["parent_department_id"],
-        name=row["name"], description=row["description"],
-        created_at=row["created_at"], active=bool(row["active"]),
+        name=row["name"],
+        description=row["description"],
+        created_at=row["created_at"],
+        active=bool(row["active"]),
     )
 
 
 def _row_to_role(row: sqlite3.Row) -> Role:
     return Role(
-        id=row["id"], organization_id=row["organization_id"],
-        name=row["name"], permissions=json.loads(row["permissions"]),
+        id=row["id"],
+        organization_id=row["organization_id"],
+        name=row["name"],
+        permissions=json.loads(row["permissions"]),
     )
 
 
 def _row_to_user(row: sqlite3.Row) -> User:
     return User(
-        id=row["id"], organization_id=row["organization_id"],
-        name=row["name"], email=row["email"],
-        department_id=row["department_id"], role_id=row["role_id"],
-        active=bool(row["active"]), created_at=row["created_at"],
+        id=row["id"],
+        organization_id=row["organization_id"],
+        name=row["name"],
+        email=row["email"],
+        department_id=row["department_id"],
+        role_id=row["role_id"],
+        active=bool(row["active"]),
+        created_at=row["created_at"],
     )
 
 
 def _row_to_agent(row: sqlite3.Row) -> Agent:
     return Agent(
-        id=row["id"], organization_id=row["organization_id"],
-        name=row["name"], provider=row["provider"],
-        model=row["model"], model_version=row["model_version"],
-        department_id=row["department_id"], harness_id=row["harness_id"],
+        id=row["id"],
+        organization_id=row["organization_id"],
+        name=row["name"],
+        provider=row["provider"],
+        model=row["model"],
+        model_version=row["model_version"],
+        department_id=row["department_id"],
+        harness_id=row["harness_id"],
         active=bool(row["active"]),
         configuration=json.loads(row["configuration"]),
         created_at=row["created_at"],
@@ -717,10 +829,14 @@ def _row_to_agent(row: sqlite3.Row) -> Agent:
 
 def _row_to_repo(row: sqlite3.Row) -> Repository:
     from geas.models import Visibility
+
     return Repository(
-        id=row["id"], organization_id=row["organization_id"],
-        department_id=row["department_id"], name=row["name"],
-        provider=row["provider"], url=row["url"],
+        id=row["id"],
+        organization_id=row["organization_id"],
+        department_id=row["department_id"],
+        name=row["name"],
+        provider=row["provider"],
+        url=row["url"],
         default_branch=row["default_branch"],
         visibility=Visibility(row["visibility"]),
         active=bool(row["active"]),
@@ -729,26 +845,35 @@ def _row_to_repo(row: sqlite3.Row) -> Repository:
 
 def _row_to_resource(row: sqlite3.Row) -> Resource:
     from geas.models import ResourceType
+
     return Resource(
-        id=row["id"], repository_id=row["repository_id"],
-        path=row["path"], type=ResourceType(row["type"]),
+        id=row["id"],
+        repository_id=row["repository_id"],
+        path=row["path"],
+        type=ResourceType(row["type"]),
         metadata=json.loads(row["metadata"]),
     )
 
 
 def _row_to_lock(row: sqlite3.Row) -> ResourceLock:
     return ResourceLock(
-        id=row["id"], resource_id=row["resource_id"],
-        ticket_id=row["ticket_id"], actor_id=row["actor_id"],
-        created_at=row["created_at"], expires_at=row["expires_at"],
+        id=row["id"],
+        resource_id=row["resource_id"],
+        ticket_id=row["ticket_id"],
+        actor_id=row["actor_id"],
+        created_at=row["created_at"],
+        expires_at=row["expires_at"],
         last_heartbeat=row["last_heartbeat"],
     )
 
 
 def _row_to_ticket(row: sqlite3.Row) -> Ticket:
     from geas.models import TicketStatus
+
     return Ticket(
-        id=row["id"], title=row["title"], description=row["description"],
+        id=row["id"],
+        title=row["title"],
+        description=row["description"],
         organization_id=row["organization_id"],
         department_id=row["department_id"],
         repository_id=row["repository_id"],
@@ -763,7 +888,8 @@ def _row_to_ticket(row: sqlite3.Row) -> Ticket:
         resources=json.loads(row["resources"]),
         dependencies=json.loads(row["dependencies"]),
         blocked_tickets=json.loads(row["blocked_tickets"]),
-        result=row["result"], feedback=row["feedback"],
+        result=row["result"],
+        feedback=row["feedback"],
         branch=row["branch"],
         commit_before=row["commit_before"],
         commit_after=row["commit_after"],
@@ -772,29 +898,41 @@ def _row_to_ticket(row: sqlite3.Row) -> Ticket:
 
 def _row_to_execution(row: sqlite3.Row) -> Execution:
     return Execution(
-        id=row["id"], ticket_id=row["ticket_id"],
-        actor_id=row["actor_id"], harness_id=row["harness_id"],
-        provider=row["provider"], model=row["model"],
+        id=row["id"],
+        ticket_id=row["ticket_id"],
+        actor_id=row["actor_id"],
+        harness_id=row["harness_id"],
+        provider=row["provider"],
+        model=row["model"],
         model_version=row["model_version"],
-        started_at=row["started_at"], finished_at=row["finished_at"],
-        tokens_input=row["tokens_input"], tokens_output=row["tokens_output"],
-        cost=row["cost"], tools_used=json.loads(row["tools_used"]),
-        iterations=row["iterations"], result=row["result"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        tokens_input=row["tokens_input"],
+        tokens_output=row["tokens_output"],
+        cost=row["cost"],
+        tools_used=json.loads(row["tools_used"]),
+        iterations=row["iterations"],
+        result=row["result"],
     )
 
 
 def _row_to_test_result(row: sqlite3.Row) -> TestResult:
     return TestResult(
-        id=row["id"], ticket_id=row["ticket_id"],
-        commit_id=row["commit_id"], pipeline_id=row["pipeline_id"],
-        status=row["status"], started_at=row["started_at"],
-        finished_at=row["finished_at"], logs_reference=row["logs_reference"],
+        id=row["id"],
+        ticket_id=row["ticket_id"],
+        commit_id=row["commit_id"],
+        pipeline_id=row["pipeline_id"],
+        status=row["status"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        logs_reference=row["logs_reference"],
     )
 
 
 def _row_to_event(row: sqlite3.Row) -> Event:
     return Event(
-        id=row["id"], event_type=row["event_type"],
+        id=row["id"],
+        event_type=row["event_type"],
         organization_id=row["organization_id"],
         actor_id=row["actor_id"],
         resource_type=row["resource_type"],
@@ -806,8 +944,11 @@ def _row_to_event(row: sqlite3.Row) -> Event:
 
 def _row_to_audit(row: sqlite3.Row) -> AuditLog:
     return AuditLog(
-        id=row["id"], actor_id=row["actor_id"],
-        action=row["action"], resource_type=row["resource_type"],
-        resource_id=row["resource_id"], timestamp=row["timestamp"],
+        id=row["id"],
+        actor_id=row["actor_id"],
+        action=row["action"],
+        resource_type=row["resource_type"],
+        resource_id=row["resource_id"],
+        timestamp=row["timestamp"],
         metadata=json.loads(row["metadata"]),
     )
