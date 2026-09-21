@@ -1,0 +1,94 @@
+# copier.yml — Geas template (spec §35)
+# Instalación: copier copy <template> <destino>
+
+# ─── Preguntas al crear una instancia ───────────────────────────────────────
+organization:
+  type: str
+  help: "Nombre de la organización (ej: Google)"
+  default: My Company
+
+git_provider:
+  type: str
+  help: Proveedor Git principal
+  choices:
+    - github
+    - gitlab
+    - bitbucket
+    - self-hosted
+  default: github
+
+deployment_profile:
+  type: str
+  help: Perfil de despliegue (spec §36)
+  choices:
+    - MINIMAL
+    - TEAM
+    - ENTERPRISE
+  default: MINIMAL
+
+database:
+  type: str
+  help: Base de datos
+  choices:
+    - sqlite
+    - postgresql
+  default: sqlite
+
+mcp_enabled:
+  type: bool
+  help: Habilitar interfaz MCP (§26)
+  default: true
+
+web_ui:
+  type: bool
+  help: Incluir Web UI (MVP 2)
+  default: false
+
+ai_agents:
+  type: bool
+  help: Gestionar agentes de IA (§6)
+  default: true
+
+departments:
+  type: bool
+  help: Estructura jerárquica de departamentos (§5)
+  default: true
+
+authentication:
+  type: str
+  help: Sistema de autenticación
+  choices:
+    - none
+    - basic
+    - sso
+  default: none
+
+harness:
+  type: str
+  help: Harness de ejecución de agentes (integra Geas con el exterior)
+  default: ""
+
+# ─── Qué ficheros se copian ─────────────────────────────────────────────────
+# Los ficheros con sufijo .tmpl se renderizan con Jinja y se renombran
+# quitando el sufijo (§35: config por instancia).
+_templates_suffix: .tmpl
+
+_exclude:
+  patterns:
+    - .git
+    - .venv
+    - __pycache__
+    - "*.pyc"
+    - "*.db"
+
+_message_after_copy: |
+  ╭─────────────────────────────────────────────────────────────╮
+  │  Geas instalado.                                            │
+  │                                                             │
+  │  Siguiente paso:                                            │
+  │    uv venv && uv pip install -e ".[dev]"                    │
+  │    uv run python -m geas init "{{ organization }}"          │
+  │                                                             │
+  │  Después, en cada repo de código:                           │
+  │    uv run python -m geas work init                          │
+  ╰─────────────────────────────────────────────────────────────╯

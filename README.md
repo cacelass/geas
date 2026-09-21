@@ -31,6 +31,20 @@ FREE → CLAIMED → IN_PROGRESS → BLOCKED → REVIEW → DONE
                               ↘ CANCELLED
 ```
 
+## Instalación
+
+```bash
+# Como template Copier (§35) — cada empresa obtiene su propia instancia:
+copier copy https://github.com/tu-org/geas-template company-geas
+cd company-geas
+uv venv && uv pip install -e ".[dev]"
+uv run python -m geas init "{{ organization }}"
+
+# O como proyecto normal:
+git clone <repo>
+uv venv && uv pip install -e ".[dev]"
+```
+
 ## Uso
 
 ```bash
