@@ -543,6 +543,8 @@ TOOLS = [
     {"name": "report_execution", "description": "Registrar ejecución (model traceability)", "params": ["ticket_id", "provider", "model"]},
 ]
 
+TOOL_NAMES = {t["name"] for t in TOOLS}
+
 
 def mcp_server(storage: Storage, actor_id: str = "agent") -> dict:
     """Punto de entrada MCP: expone las herramientas (§26).

@@ -59,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if cmd == "init":
             return _cmd_init(storage, args)
+        elif cmd == "work":
+            from geas.work import main as work_main
+            return work_main(args)
+        elif cmd == "mcp":
+            return _cmd_mcp(storage, args)
         elif cmd == "org":
             return _cmd_org(storage, args)
         elif cmd == "dept":
@@ -121,57 +126,181 @@ def _cmd_org(storage: Storage, args: list[str]) -> int:
 
 
 def _cmd_dept(storage: Storage, args: list[str]) -> int:
-    if not args or args[0] != "list" or len(args) < 2:
-        print("Uso: geas dept list <org_id>")
+    if not args:
+        print("Uso: geas dept list|create ...")
         return 1
-    depts = storage.list_departments(args[1])
-    if not depts:
-        print("No hay departamentos.")
+    sub = args[0]
+    if sub == "list":
+        if len(args) < 2:
+            print("Uso: geas dept list <org_id>")
+            return 1
+        depts = storage.list_departments(args[1])
+        if not depts:
+            print("No hay departamentos.")
+            return 0
+        for d in depts:
+            print(f"  {d.id[:8]}  {d.name}")
         return 0
-    for d in depts:
-        print(f"  {d.id[:8]}  {d.name}")
-    return 0
+    if sub == "create":
+        if len(args) < 3:
+            print("Uso: geas dept create <org_id> <name> [parent_dept_id]")
+            return 1
+        parent = args[3] if len(args) > 3 else None
+        d = Department(organization_id=args[1], name=args[2],
+                       parent_department_id=parent)
+        storage.create_department(d)
+        print(f"Departamento creado: {d.id[:8]}  {d.name}")
+        return 0
+    print(f"Subcomando desconocido: dept {sub}", file=sys.stderr)
+    return 1
 
 
 def _cmd_user(storage: Storage, args: list[str]) -> int:
-    if not args or args[0] != "list" or len(args) < 2:
-        print("Uso: geas user list <org_id>")
+    if not args:
+        print("Uso: geas user list|create ...")
         return 1
-    users = storage.list_users(args[1])
-    if not users:
-        print("No hay usuarios.")
+    sub = args[0]
+    if sub == "list":
+        if len(args) < 2:
+            print("Uso: geas user list <org_id>")
+            return 1
+        users = storage.list_users(args[1])
+        if not users:
+            print("No hay usuarios.")
+            return 0
+        for u in users:
+            status = "activo" if u.active else "inactivo"
+            print(f"  {u.id[:8]}  {u.name} <{u.email}>  [{status}]")
         return 0
-    for u in users:
-        status = "activo" if u.active else "inactivo"
-        print(f"  {u.id[:8]}  {u.name} <{u.email}>  [{status}]")
-    return 0
+    if sub == "create":
+        if len(args) < 3:
+            print("Uso: geas user create <org_id> <name> [email] [dept_id] [role_id]")
+            return 1
+        email = args[3] if len(args) > 3 else ""
+        dept_id = args[4] if len(args) > 4 else None
+        role_id = args[5] if len(args) > 5 else None
+        u = User(organization_id=args[1], name=args[2], email=email,
+                 department_id=dept_id, role_id=role_id)
+        storage.create_user(u)
+        print(f"Usuario creado: {u.id[:8]}  {u.name}")
+        return 0
+    print(f"Subcomando desconocido: user {sub}", file=sys.stderr)
+    return 1
 
 
 def _cmd_agent(storage: Storage, args: list[str]) -> int:
-    if not args or args[0] != "list" or len(args) < 2:
-        print("Uso: geas agent list <org_id>")
+    if not args:
+        print("Uso: geas agent list|create ...")
         return 1
-    agents = storage.list_agents(args[1])
-    if not agents:
-        print("No hay agentes.")
+    sub = args[0]
+    if sub == "list":
+        if len(args) < 2:
+            print("Uso: geas agent list <org_id>")
+            return 1
+        agents = storage.list_agents(args[1])
+        if not agents:
+            print("No hay agentes.")
+            return 0
+        for a in agents:
+            status = "activo" if a.active else "inactivo"
+            print(f"  {a.id[:8]}  {a.name}  ({a.provider}/{a.model})  [{status}]")
         return 0
-    for a in agents:
-        status = "activo" if a.active else "inactivo"
-        print(f"  {a.id[:8]}  {a.name}  ({a.provider}/{a.model})  [{status}]")
-    return 0
+    if sub == "create":
+        if len(args) < 4:
+            print("Uso: geas agent create <org_id> <name> <provider> <model> [dept_id]")
+            return 1
+        dept_id = args[5] if len(args) > 5 else None
+        a = Agent(organization_id=args[1], name=args[2],
+                  provider=args[3], model=args[4], department_id=dept_id)
+        storage.create_agent(a)
+        print(f"Agente creado: {a.id[:8]}  {a.name} ({args[3]}/{args[4]})")
+        return 0
+    print(f"Subcomando desconocido: agent {sub}", file=sys.stderr)
+    return 1
+
+
+def _cmd_mcp(storage: Storage, args: list[str]) -> int:
+    """geas mcp <tool> [--param value ...] — invoca una herramienta MCP (§26).
+
+    Uso:
+        geas mcp get_available_tasks
+        geas mcp create_ticket --title "Implementar X"
+        geas mcp start_ticket --ticket_id <id>
+        geas mcp list          → catálogo de herramientas
+    """
+    if not args or args[0] == "list":
+        from geas.mcp import TOOLS
+        print("Herramientas MCP:")
+        for tool in TOOLS:
+            print(f"  {tool['name']:25} {tool['description']}")
+        return 0
+
+    tool = args[0]
+    params: dict = {}
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--"):
+            key = arg[2:]
+            if i + 1 < len(args) and not args[i + 1].startswith("--"):
+                value = args[i + 1]
+                # Intenta parsear JSON (listas, números)
+                try:
+                    params[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    params[key] = value
+                i += 2
+            else:
+                params[key] = True
+                i += 1
+        else:
+            i += 1
+
+    from geas.mcp import GeasMcp, TOOL_NAMES
+    if tool not in TOOL_NAMES:
+        print(f"Herramienta desconocida: {tool}", file=sys.stderr)
+        print("Usa: geas mcp list", file=sys.stderr)
+        return 1
+
+    orgs = storage.list_organizations()
+    org_id = orgs[0].id if orgs else ""
+    mcp = GeasMcp(storage, actor_id=params.pop("actor_id", "cli"),
+                  org_id=params.pop("org_id", org_id))
+    result = mcp.call(tool, params)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["success"] else 1
 
 
 def _cmd_repo(storage: Storage, args: list[str]) -> int:
-    if not args or args[0] != "list" or len(args) < 2:
-        print("Uso: geas repo list <org_id>")
+    if not args:
+        print("Uso: geas repo list|create ...")
         return 1
-    repos = storage.list_repositories(args[1])
-    if not repos:
-        print("No hay repositorios.")
+    sub = args[0]
+    if sub == "list":
+        if len(args) < 2:
+            print("Uso: geas repo list <org_id>")
+            return 1
+        repos = storage.list_repositories(args[1])
+        if not repos:
+            print("No hay repositorios.")
+            return 0
+        for r in repos:
+            print(f"  {r.id[:8]}  {r.name}  ({r.provider})  [{r.visibility.value}]")
         return 0
-    for r in repos:
-        print(f"  {r.id[:8]}  {r.name}  ({r.provider})  [{r.visibility.value}]")
-    return 0
+    if sub == "create":
+        if len(args) < 3:
+            print("Uso: geas repo create <org_id> <name> [provider] [url] [dept_id]")
+            return 1
+        provider = args[3] if len(args) > 3 else "local"
+        url = args[4] if len(args) > 4 else ""
+        dept_id = args[5] if len(args) > 5 else None
+        r = Repository(organization_id=args[1], name=args[2],
+                       provider=provider, url=url, department_id=dept_id)
+        storage.create_repository(r)
+        print(f"Repositorio creado: {r.id[:8]}  {r.name}")
+        return 0
+    print(f"Subcomando desconocido: repo {sub}", file=sys.stderr)
+    return 1
 
 
 def _cmd_ticket(storage: Storage, args: list[str]) -> int:
