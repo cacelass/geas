@@ -125,8 +125,14 @@ def cmd_init(storage: Storage, args: list[str]) -> int:
         "mcp_url": "",
     })
 
+    # 6. Generar scripts status.sh / sync.sh / start.sh / finish.sh (§25)
+    from geas.scripts import generate_scripts
+    scripts = generate_scripts(repo_path)
+
     print(f"Repository registrado: {repo.id[:8]} ({name})")
     print(f"Config: {ctx.config_file}")
+    for s in scripts:
+        print(f"Script: {s}")
     return 0
 
 
