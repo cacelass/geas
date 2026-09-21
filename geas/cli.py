@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
             return work_main(args)
         elif cmd == "mcp":
             return _cmd_mcp(storage, args)
+        elif cmd == "serve":
+            return _cmd_serve(storage, args)
         elif cmd == "org":
             return _cmd_org(storage, args)
         elif cmd == "dept":
@@ -236,6 +238,16 @@ def _cmd_mcp(storage: Storage, args: list[str]) -> int:
         geas mcp start_ticket --ticket_id <id>
         geas mcp list          → catálogo de herramientas
     """
+    if args and args[0] == "serve":
+        from geas.mcp_stdio import serve
+
+        actor_id = args[1] if len(args) > 1 else ""
+        if not actor_id:
+            print("Uso: geas mcp serve <actor_id> [org_id]", file=sys.stderr)
+            return 1
+        serve(storage, actor_id=actor_id, org_id=args[2] if len(args) > 2 else "")
+        return 0
+
     if not args or args[0] == "list":
         from geas.mcp import TOOLS
 
@@ -282,6 +294,21 @@ def _cmd_mcp(storage: Storage, args: list[str]) -> int:
     result = mcp.call(tool, params)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result["success"] else 1
+
+
+def _cmd_serve(storage: Storage, args: list[str]) -> int:
+    """Inicia API HTTP y panel web: geas serve [host] [port]."""
+    from geas.server import serve
+
+    host = args[0] if args else "127.0.0.1"
+    try:
+        port = int(args[1]) if len(args) > 1 else 8787
+    except ValueError:
+        print("El puerto debe ser un entero", file=sys.stderr)
+        return 1
+    print(f"Geas disponible en http://{host}:{port}")
+    serve(storage, host, port)
+    return 0
 
 
 def _cmd_repo(storage: Storage, args: list[str]) -> int:

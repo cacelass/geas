@@ -166,6 +166,8 @@ class TestUsers:
 
 class TestAgents:
     def test_create_and_get(self, storage, org, dept):
+        role = Role(organization_id=org.id, name="agent", permissions=["ticket:read"])
+        storage.create_role(role)
         a = Agent(
             organization_id=org.id,
             department_id=dept.id,
@@ -173,6 +175,7 @@ class TestAgents:
             provider="anthropic",
             model="claude-4",
             model_version="1.0",
+            role_id=role.id,
             harness_id="harness-a",
             configuration={"temperature": 0.5},
         )
@@ -180,6 +183,7 @@ class TestAgents:
         found = storage.get_agent(a.id)
         assert found is not None
         assert found.provider == "anthropic"
+        assert found.role_id == role.id
         assert found.configuration["temperature"] == 0.5
 
 
@@ -296,6 +300,24 @@ class TestLocks:
         storage.create_lock(lock)
         assert storage.heartbeat_lock(lock.id) is True
 
+    def test_acquire_locks_is_all_or_nothing(self, storage, repo):
+        first = Resource(repository_id=repo.id, path="first.py")
+        second = Resource(repository_id=repo.id, path="second.py")
+        storage.create_resource(first)
+        storage.create_resource(second)
+        owner = Ticket(organization_id=repo.organization_id, title="Owner")
+        other = Ticket(organization_id=repo.organization_id, title="Other")
+        storage.create_ticket(owner)
+        storage.create_ticket(other)
+
+        assert storage.acquire_locks([first.id], owner.id, "agent-a") == (True, None)
+        acquired, blocked = storage.acquire_locks(
+            [first.id, second.id], other.id, "agent-b"
+        )
+        assert acquired is False
+        assert blocked == first.id
+        assert storage.get_lock_for_resource(second.id) is None
+
 
 # ─── Tickets y dependencias ─────────────────────────────────────────────────
 
@@ -367,6 +389,19 @@ class TestTickets:
         # Completar t1 → dependencia resuelta
         storage.complete_ticket(t1.id, commit_after="abc")
         assert storage.are_dependencies_resolved(t2.id) is True
+
+    def test_dependency_cycle_is_rejected(self, storage, org):
+        first = Ticket(organization_id=org.id, title="First")
+        second = Ticket(organization_id=org.id, title="Second")
+        storage.create_ticket(first)
+        storage.create_ticket(second)
+        storage.create_dependency(
+            TicketDependency(ticket_id=second.id, depends_on_ticket_id=first.id)
+        )
+        with pytest.raises(ValueError, match="DEPENDENCY_CYCLE"):
+            storage.create_dependency(
+                TicketDependency(ticket_id=first.id, depends_on_ticket_id=second.id)
+            )
 
 
 # ─── Executions y TestResults ───────────────────────────────────────────────

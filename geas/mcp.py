@@ -27,14 +27,12 @@ Arquitectura (§26):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from geas.models import (
     AuditLog,
     Event,
     Execution,
-    ResourceLock,
     TestResult,
     Ticket,
     TicketDependency,
@@ -68,6 +66,16 @@ class GeasMcp:
         self.actor_id = actor_id
         self.org_id = org_id
 
+    def _authorize(self, organization_id: str, permission: str) -> dict | None:
+        if self.storage.actor_has_permission(
+            self.actor_id, organization_id, permission
+        ):
+            return None
+        return _err(
+            "FORBIDDEN",
+            {"actor_id": self.actor_id, "permission": permission},
+        )
+
     # ─── Tickets ───────────────────────────────────────────────────────
 
     def get_available_tasks(self) -> dict:
@@ -77,6 +85,10 @@ class GeasMcp:
             if not orgs:
                 return _err("No hay organizaciones")
             self.org_id = orgs[0].id
+
+        denied = self._authorize(self.org_id, "ticket:start")
+        if denied:
+            return denied
 
         tickets = self.storage.list_tickets(self.org_id)
         available = []
@@ -113,6 +125,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:read")
+        if denied:
+            return denied
         return _ok(
             {
                 "id": t.id,
@@ -145,6 +160,9 @@ class GeasMcp:
         if not orgs:
             return _err("No hay organizaciones")
         org_id = self.org_id or orgs[0].id
+        denied = self._authorize(org_id, "ticket:create")
+        if denied:
+            return denied
 
         # Validar dependencias: no circular, deben existir
         for dep in dependencies or []:
@@ -195,58 +213,40 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:update")
+        if denied:
+            return denied
         allowed = {"title", "description", "priority", "result", "feedback"}
         updates = {k: v for k, v in fields.items() if k in allowed and k != "id"}
-        for key, value in updates.items():
-            setattr(t, key, value)
-        # MVP: reescribir con update de status no disponible; guardar campos
-        # simples vía update genérico
-        ticket_id_ = ticket_id
-        if "priority" in updates:
-            self.storage.conn.execute(
-                "UPDATE tickets SET priority = ? WHERE id = ?",
-                (updates["priority"], ticket_id_),
-            )
-        if "result" in updates:
-            self.storage.conn.execute(
-                "UPDATE tickets SET result = ? WHERE id = ?",
-                (updates["result"], ticket_id_),
-            )
-        if "feedback" in updates:
-            self.storage.conn.execute(
-                "UPDATE tickets SET feedback = ? WHERE id = ?",
-                (updates["feedback"], ticket_id_),
-            )
-        self.storage.conn.commit()
+        self.storage.update_ticket_fields(ticket_id, **updates)
         return _ok({"id": ticket_id, "updated": list(updates.keys())})
 
     def start_ticket(self, ticket_id: str, commit_before: str = "") -> dict:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:start")
+        if denied:
+            return denied
+        denied = self._authorize(t.organization_id, "resource:lock")
+        if denied:
+            return denied
         if t.status != TicketStatus.FREE:
             return _err(f"Ticket no está FREE: {t.status.value}")
         if not self.storage.are_dependencies_resolved(ticket_id):
             return _err("DEPENDENCIES_UNRESOLVED")
 
-        # Locks con TTL (spec §14)
-        now = datetime.now(UTC)
-        expires = (now + timedelta(hours=2)).isoformat()
-        for res_id in t.resources:
-            lock = self.storage.get_lock_for_resource(res_id)
-            if lock and lock.ticket_id != ticket_id:
-                return _err(
-                    "RESOURCE_UNAVAILABLE",
-                    {"resource_id": res_id, "locked_by": lock.ticket_id},
-                )
-        for res_id in t.resources:
-            self.storage.create_lock(
-                ResourceLock(
-                    resource_id=res_id,
-                    ticket_id=ticket_id,
-                    actor_id=self.actor_id,
-                    expires_at=expires,
-                )
+        acquired, blocked_resource = self.storage.acquire_locks(
+            t.resources, ticket_id, self.actor_id
+        )
+        if not acquired:
+            lock = self.storage.get_lock_for_resource(blocked_resource or "")
+            return _err(
+                "RESOURCE_UNAVAILABLE",
+                {
+                    "resource_id": blocked_resource,
+                    "locked_by": lock.ticket_id if lock else "",
+                },
             )
 
         branch = f"{ticket_id[:8]}-{t.title.replace(' ', '-')[:20]}"
@@ -267,6 +267,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:block")
+        if denied:
+            return denied
         self.storage.update_ticket_status(ticket_id, "BLOCKED")
         self.storage.create_event(
             Event(
@@ -286,6 +289,12 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:complete")
+        if denied:
+            return denied
+        denied = self._authorize(t.organization_id, "resource:unlock")
+        if denied:
+            return denied
         self.storage.complete_ticket(
             ticket_id, commit_after=commit_after, result=result
         )
@@ -306,6 +315,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:update")
+        if denied:
+            return denied
         self.storage.update_ticket_status(ticket_id, "CANCELLED")
         released = self.storage.release_locks_for_ticket(ticket_id)
         self.storage.create_event(
@@ -323,6 +335,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:read")
+        if denied:
+            return denied
         deps = self.storage.get_dependencies(ticket_id)
         blocked = self.storage.get_blocked_by(ticket_id)
         return _ok(
@@ -345,22 +360,27 @@ class GeasMcp:
         res = self.storage.get_resource(resource_id)
         if not res:
             return _err(f"Recurso no encontrado: {resource_id}")
-        existing = self.storage.get_lock_for_resource(resource_id)
-        if existing:
+        repo = self.storage.get_repository(res.repository_id or "")
+        if not repo:
+            return _err("Repositorio no encontrado")
+        denied = self._authorize(repo.organization_id, "resource:lock")
+        if denied:
+            return denied
+        ticket = self.storage.get_ticket(ticket_id)
+        if not ticket:
+            return _err("ticket_id es obligatorio para bloquear un recurso")
+        acquired, _ = self.storage.acquire_locks(
+            [resource_id], ticket_id, self.actor_id
+        )
+        if not acquired:
+            existing = self.storage.get_lock_for_resource(resource_id)
             return _err(
                 "RESOURCE_UNAVAILABLE",
-                {"locked_by": existing.ticket_id, "expires_at": existing.expires_at},
+                {
+                    "locked_by": existing.ticket_id if existing else "",
+                    "expires_at": existing.expires_at if existing else "",
+                },
             )
-        now = datetime.now(UTC)
-        expires = (now + timedelta(hours=2)).isoformat()
-        self.storage.create_lock(
-            ResourceLock(
-                resource_id=resource_id,
-                ticket_id=ticket_id,
-                actor_id=self.actor_id,
-                expires_at=expires,
-            )
-        )
         self.storage.create_event(
             Event(
                 event_type="RESOURCE_LOCKED",
@@ -376,12 +396,25 @@ class GeasMcp:
                 metadata={"ticket_id": ticket_id},
             )
         )
-        return _ok({"resource_id": resource_id, "locked": True, "expires_at": expires})
+        lock = self.storage.get_lock_for_resource(resource_id)
+        return _ok(
+            {
+                "resource_id": resource_id,
+                "locked": True,
+                "expires_at": lock.expires_at if lock else "",
+            }
+        )
 
     def release_resource(self, resource_id: str) -> dict:
         lock = self.storage.get_lock_for_resource(resource_id)
         if not lock:
             return _ok({"resource_id": resource_id, "locked": False})
+        ticket = self.storage.get_ticket(lock.ticket_id)
+        if not ticket:
+            return _err("Ticket del lock no encontrado")
+        denied = self._authorize(ticket.organization_id, "resource:unlock")
+        if denied:
+            return denied
         self.storage.release_lock(lock.id)
         self.storage.create_event(
             Event(
@@ -401,6 +434,9 @@ class GeasMcp:
         repo = self.storage.get_repository(repository_id)
         if not repo:
             return _err(f"Repository no encontrado: {repository_id}")
+        denied = self._authorize(repo.organization_id, "repository:read")
+        if denied:
+            return denied
         tickets = [
             t
             for t in self.storage.list_tickets(repo.organization_id)
@@ -433,6 +469,17 @@ class GeasMcp:
     def sync(self) -> dict:
         from geas.git import LocalGitProvider
 
+        org_id = self.org_id or (
+            self.storage.list_organizations()[0].id
+            if self.storage.list_organizations()
+            else ""
+        )
+        if not org_id:
+            return _err("No hay organizaciones")
+        denied = self._authorize(org_id, "repository:read")
+        if denied:
+            return denied
+
         g = LocalGitProvider()
         s = g.status()
         return _ok(
@@ -452,6 +499,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "git:commit")
+        if denied:
+            return denied
         if not t.commit_before:
             self.storage.conn.execute(
                 "UPDATE tickets SET commit_before = ? WHERE id = ?",
@@ -481,6 +531,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:update")
+        if denied:
+            return denied
         self.storage.create_test_result(
             TestResult(
                 ticket_id=ticket_id,
@@ -503,6 +556,12 @@ class GeasMcp:
         return _ok({"ticket_id": ticket_id, "status": status})
 
     def get_execution(self, ticket_id: str) -> dict:
+        ticket = self.storage.get_ticket(ticket_id)
+        if not ticket:
+            return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(ticket.organization_id, "execution:read")
+        if denied:
+            return denied
         executions = self.storage.get_executions(ticket_id)
         return _ok(
             {
@@ -543,6 +602,9 @@ class GeasMcp:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
+        denied = self._authorize(t.organization_id, "ticket:start")
+        if denied:
+            return denied
         exe = Execution(
             ticket_id=ticket_id,
             actor_id=self.actor_id,
@@ -747,8 +809,7 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 def mcp_server(storage: Storage, actor_id: str = "agent") -> dict:
     """Punto de entrada MCP: expone las herramientas (§26).
 
-    En MVP devuelve el catálogo; la integración con el protocolo MCP
-    real (stdio/SSE) se añade en MVP 3.
+    Para transporte stdio real, ejecuta ``geas mcp serve <actor_id>``.
     """
     return {
         "protocol": "mcp",

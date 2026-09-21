@@ -120,6 +120,7 @@ class Agent:
     model: str = ""
     model_version: str = ""
     department_id: str | None = None
+    role_id: str | None = None
     harness_id: str = ""
     active: bool = True
     configuration: dict = field(default_factory=dict)

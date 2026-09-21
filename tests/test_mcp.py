@@ -11,9 +11,12 @@ import pytest
 
 from geas.mcp import GeasMcp
 from geas.models import (
+    DEFAULT_PERMISSIONS,
+    Agent,
     Organization,
     Repository,
     Resource,
+    Role,
 )
 from geas.storage import Storage
 
@@ -40,8 +43,33 @@ def repo(storage, org):
 
 
 @pytest.fixture
-def mcp(storage, org):
-    return GeasMcp(storage, actor_id="agent-A", org_id=org.id)
+def admin_role(storage, org):
+    role = Role(
+        organization_id=org.id,
+        name="test-admin",
+        permissions=DEFAULT_PERMISSIONS,
+    )
+    storage.create_role(role)
+    return role
+
+
+@pytest.fixture
+def agent(storage, org, admin_role):
+    actor = Agent(
+        id="agent-A",
+        organization_id=org.id,
+        name="agent-A",
+        provider="test",
+        model="test",
+        role_id=admin_role.id,
+    )
+    storage.create_agent(actor)
+    return actor
+
+
+@pytest.fixture
+def mcp(storage, org, agent):
+    return GeasMcp(storage, actor_id=agent.id, org_id=org.id)
 
 
 class TestTicketsViaMcp:
@@ -82,7 +110,9 @@ class TestTicketsViaMcp:
 class TestLockViaMcp:
     """La demo de la spec §13/§41 a través de MCP."""
 
-    def test_resource_lock_blocks_other_ticket(self, mcp, storage, org, repo):
+    def test_resource_lock_blocks_other_ticket(
+        self, mcp, storage, org, repo, admin_role
+    ):
         # Recurso Chat.py
         res = Resource(repository_id=repo.id, path="Chat.py")
         storage.create_resource(res)
@@ -94,7 +124,16 @@ class TestLockViaMcp:
         t104 = r104["data"]["id"]
 
         # YT-105 (agente B)
-        mcp_b = GeasMcp(storage, actor_id="agent-B", org_id=org.id)
+        agent_b = Agent(
+            id="agent-B",
+            organization_id=org.id,
+            name="agent-B",
+            provider="test",
+            model="test",
+            role_id=admin_role.id,
+        )
+        storage.create_agent(agent_b)
+        mcp_b = GeasMcp(storage, actor_id=agent_b.id, org_id=org.id)
         r105 = mcp_b.create_ticket(title="Refactor Chat", resources=[res.id])
         t105 = r105["data"]["id"]
 
@@ -170,3 +209,34 @@ class TestDispatcher:
         r = mcp.call("get_available_tasks")
         assert r["success"] is True
         assert "available_tasks" in r["data"]
+
+
+class TestAuthorization:
+    def test_missing_permission_is_rejected(self, storage, org):
+        role = Role(organization_id=org.id, name="reader", permissions=["ticket:read"])
+        storage.create_role(role)
+        actor = Agent(
+            organization_id=org.id,
+            name="reader-agent",
+            provider="test",
+            model="test",
+            role_id=role.id,
+        )
+        storage.create_agent(actor)
+
+        result = GeasMcp(storage, actor_id=actor.id, org_id=org.id).create_ticket(
+            title="No autorizado"
+        )
+        assert result["success"] is False
+        assert result["error"] == "FORBIDDEN"
+
+    def test_update_persists_all_documented_fields(self, mcp):
+        ticket_id = mcp.create_ticket(title="Antes", description="vieja")["data"]["id"]
+        result = mcp.update_ticket(
+            ticket_id, title="Después", description="nueva", priority=3
+        )
+        assert result["success"] is True
+        ticket = mcp.get_ticket(ticket_id)["data"]
+        assert ticket["title"] == "Después"
+        assert ticket["description"] == "nueva"
+        assert ticket["priority"] == 3

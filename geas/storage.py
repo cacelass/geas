@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from geas.models import (
@@ -35,7 +35,10 @@ class Storage:
 
     def __init__(self, db_path: str | Path = "geas.db"):
         self.db_path = Path(db_path)
-        self.conn = sqlite3.connect(str(self.db_path))
+        # El servidor HTTP atiende en un hilo distinto al de inicialización.
+        # La API usa HTTPServer (un solo consumidor), y SQLite sigue
+        # serializando escrituras mediante BEGIN IMMEDIATE para los locks.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -46,6 +49,12 @@ class Storage:
 
     def _create_tables(self):
         self.conn.executescript(SCHEMA)
+        # Las primeras bases SQLite no tenían rol para los agentes. Mantener la
+        # migración aquí evita que una actualización deje instancias existentes
+        # sin RBAC.
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(agents)")}
+        if "role_id" not in columns:
+            self.conn.execute("ALTER TABLE agents ADD COLUMN role_id TEXT")
         self.conn.commit()
 
     # ─── Organizations ──────────────────────────────────────────────────
@@ -170,8 +179,8 @@ class Storage:
     def create_agent(self, agent: Agent) -> Agent:
         self.conn.execute(
             "INSERT INTO agents (id, organization_id, name, provider, model, "
-            "model_version, department_id, harness_id, active, configuration, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "model_version, department_id, role_id, harness_id, active, configuration, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent.id,
                 agent.organization_id,
@@ -180,6 +189,7 @@ class Storage:
                 agent.model,
                 agent.model_version,
                 agent.department_id or None,
+                agent.role_id or None,
                 agent.harness_id,
                 agent.active,
                 json.dumps(agent.configuration),
@@ -201,6 +211,36 @@ class Storage:
             (org_id,),
         ).fetchall()
         return [_row_to_agent(r) for r in rows]
+
+    # ─── Autorización ──────────────────────────────────────────────────
+
+    def get_actor_permissions(self, actor_id: str, organization_id: str) -> set[str]:
+        """Permisos efectivos de un usuario o agente activo de la organización."""
+        actor = self.get_user(actor_id)
+        if actor is not None:
+            if not actor.active or actor.organization_id != organization_id:
+                return set()
+            role_id = actor.role_id
+        else:
+            agent = self.get_agent(actor_id)
+            if (
+                agent is None
+                or not agent.active
+                or agent.organization_id != organization_id
+            ):
+                return set()
+            role_id = agent.role_id
+        role = self.get_role(role_id) if role_id else None
+        return (
+            set(role.permissions)
+            if role and role.organization_id == organization_id
+            else set()
+        )
+
+    def actor_has_permission(
+        self, actor_id: str, organization_id: str, permission: str
+    ) -> bool:
+        return permission in self.get_actor_permissions(actor_id, organization_id)
 
     # ─── Repositories ───────────────────────────────────────────────────
 
@@ -286,11 +326,67 @@ class Storage:
         self.conn.commit()
         return lock
 
+    def acquire_locks(
+        self,
+        resource_ids: list[str],
+        ticket_id: str,
+        actor_id: str,
+        ttl_seconds: int = 7200,
+    ) -> tuple[bool, str | None]:
+        """Adquiere todos los locks o ninguno bajo una transacción SQLite."""
+        now = datetime.now(UTC)
+        now_value = now.isoformat()
+        expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+        unique_ids = list(dict.fromkeys(resource_ids))
+        if not unique_ids:
+            return True, None
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute(
+                "DELETE FROM resource_locks WHERE expires_at <= ?", (now_value,)
+            )
+            marks = ", ".join("?" for _ in unique_ids)
+            blocked = self.conn.execute(
+                f"SELECT resource_id FROM resource_locks WHERE resource_id IN ({marks}) "
+                "AND ticket_id != ? LIMIT 1",
+                (*unique_ids, ticket_id),
+            ).fetchone()
+            if blocked:
+                self.conn.rollback()
+                return False, blocked["resource_id"]
+            for resource_id in unique_ids:
+                existing = self.conn.execute(
+                    "SELECT id FROM resource_locks WHERE resource_id = ? AND ticket_id = ?",
+                    (resource_id, ticket_id),
+                ).fetchone()
+                if existing is None:
+                    self.conn.execute(
+                        "INSERT INTO resource_locks "
+                        "(id, resource_id, ticket_id, actor_id, created_at, expires_at, last_heartbeat) "
+                        "VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?)",
+                        (
+                            resource_id,
+                            ticket_id,
+                            actor_id,
+                            now_value,
+                            expires,
+                            now_value,
+                        ),
+                    )
+            self.conn.commit()
+            return True, None
+        except sqlite3.Error:
+            self.conn.rollback()
+            raise
+
     def get_lock_for_resource(self, resource_id: str) -> ResourceLock | None:
+        now = datetime.now(UTC).isoformat()
+        self.conn.execute("DELETE FROM resource_locks WHERE expires_at <= ?", (now,))
+        self.conn.commit()
         row = self.conn.execute(
             "SELECT * FROM resource_locks WHERE resource_id = ? "
-            "AND expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1",
-            (resource_id,),
+            "AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+            (resource_id, now),
         ).fetchone()
         return _row_to_lock(row) if row else None
 
@@ -306,16 +402,24 @@ class Storage:
         self.conn.commit()
         return cur.rowcount
 
-    def heartbeat_lock(self, lock_id: str) -> bool:
-        from datetime import datetime
-
+    def heartbeat_lock(self, lock_id: str, ttl_seconds: int = 7200) -> bool:
         now = datetime.now(UTC).isoformat()
+        expires = (datetime.now(UTC) + timedelta(seconds=ttl_seconds)).isoformat()
         cur = self.conn.execute(
-            "UPDATE resource_locks SET last_heartbeat = ? WHERE id = ?",
-            (now, lock_id),
+            "UPDATE resource_locks SET last_heartbeat = ?, expires_at = ? "
+            "WHERE id = ? AND expires_at > ?",
+            (now, expires, lock_id, now),
         )
         self.conn.commit()
         return cur.rowcount > 0
+
+    def expire_locks(self) -> int:
+        cur = self.conn.execute(
+            "DELETE FROM resource_locks WHERE expires_at <= ?",
+            (datetime.now(UTC).isoformat(),),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     # ─── Tickets ────────────────────────────────────────────────────────
 
@@ -399,6 +503,20 @@ class Storage:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def update_ticket_fields(self, ticket_id: str, **fields: object) -> bool:
+        """Actualiza únicamente los campos de ticket modificables por la API."""
+        allowed = {"title", "description", "priority", "result", "feedback"}
+        updates = {name: value for name, value in fields.items() if name in allowed}
+        if not updates:
+            return False
+        assignments = ", ".join(f"{name} = ?" for name in updates)
+        cur = self.conn.execute(
+            f"UPDATE tickets SET {assignments} WHERE id = ?",
+            (*updates.values(), ticket_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def assign_ticket(self, ticket_id: str, actor_id: str) -> bool:
         cur = self.conn.execute(
             "UPDATE tickets SET assigned_actor_id = ?, status = 'CLAIMED' "
@@ -439,6 +557,10 @@ class Storage:
     # ─── TicketDependencies ─────────────────────────────────────────────
 
     def create_dependency(self, dep: TicketDependency) -> TicketDependency:
+        if dep.ticket_id == dep.depends_on_ticket_id or self.would_create_cycle(
+            dep.ticket_id, dep.depends_on_ticket_id
+        ):
+            raise ValueError("DEPENDENCY_CYCLE")
         self.conn.execute(
             "INSERT INTO ticket_dependencies (id, ticket_id, depends_on_ticket_id, "
             "created_at) VALUES (?, ?, ?, ?)",
@@ -446,6 +568,24 @@ class Storage:
         )
         self.conn.commit()
         return dep
+
+    def would_create_cycle(self, ticket_id: str, depends_on_ticket_id: str) -> bool:
+        """Comprueba si ``ticket_id -> depends_on`` cerraría un ciclo."""
+        pending = [depends_on_ticket_id]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current == ticket_id:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            rows = self.conn.execute(
+                "SELECT depends_on_ticket_id FROM ticket_dependencies WHERE ticket_id = ?",
+                (current,),
+            ).fetchall()
+            pending.extend(row["depends_on_ticket_id"] for row in rows)
+        return False
 
     def get_dependencies(self, ticket_id: str) -> list[Ticket]:
         """Devuelve los tickets de los que depende ticket_id."""
@@ -644,6 +784,7 @@ CREATE TABLE IF NOT EXISTS agents (
     model TEXT DEFAULT '',
     model_version TEXT DEFAULT '',
     department_id TEXT REFERENCES departments(id),
+    role_id TEXT REFERENCES roles(id),
     harness_id TEXT DEFAULT '',
     active INTEGER DEFAULT 1,
     configuration TEXT DEFAULT '{}',  -- JSON object
@@ -820,6 +961,7 @@ def _row_to_agent(row: sqlite3.Row) -> Agent:
         model=row["model"],
         model_version=row["model_version"],
         department_id=row["department_id"],
+        role_id=row["role_id"],
         harness_id=row["harness_id"],
         active=bool(row["active"]),
         configuration=json.loads(row["configuration"]),
