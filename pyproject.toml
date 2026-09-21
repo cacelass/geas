@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "geas"
+version = "0.1.0"
+description = "Plataforma de coordinación del trabajo de desarrolladores humanos y agentes de IA dentro de una organización."
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.scripts]
+geas = "geas.cli:main"
