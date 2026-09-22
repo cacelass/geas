@@ -653,6 +653,19 @@ class Storage:
         ).fetchall()
         return [_row_to_execution(r) for r in rows]
 
+    def update_execution_result(
+        self, execution_id: str, result: str, finished_at: str | None = None
+    ) -> bool:
+        """Registra el resultado final de una ejecución (§28)."""
+        if finished_at is None:
+            finished_at = datetime.now(UTC).isoformat()
+        cur = self.conn.execute(
+            "UPDATE executions SET result = ?, finished_at = ? WHERE id = ?",
+            (result, finished_at, execution_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     # ─── TestResults ────────────────────────────────────────────────────
 
     def create_test_result(self, tr: TestResult) -> TestResult:

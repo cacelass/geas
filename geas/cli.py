@@ -59,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
             from geas.work import main as work_main
 
             return work_main(args)
+        elif cmd == "harness":
+            return _cmd_harness(storage, args)
         elif cmd == "mcp":
             return _cmd_mcp(storage, args)
         elif cmd == "serve":
@@ -294,6 +296,103 @@ def _cmd_mcp(storage: Storage, args: list[str]) -> int:
     result = mcp.call(tool, params)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result["success"] else 1
+
+
+def _cmd_harness(storage: Storage, args: list[str]) -> int:
+    """geas harness run <ticket_id> — ejecuta un ticket en un worktree aislado (§27).
+
+    Uso:
+        geas harness run <ticket_id> --repo <path> --cmd "<comando>..."
+                                    [--tests "<comando>..."]
+                                    [--agent <agent_id>] [--actor <id>]
+                                    [--keep] [--timeout <s>]
+    """
+    if not args or args[0] != "run" or len(args) < 2:
+        print(
+            "Uso: geas harness run <ticket_id> --repo <path> --cmd ...", file=sys.stderr
+        )
+        return 1
+
+    ticket_id = args[1]
+    pos = 2
+    repo_path = "."
+    command: list[str] | None = None
+    test_command: list[str] | None = None
+    agent_id: str | None = None
+    actor_id = "runner"
+    keep = False
+    timeout: int | None = None
+
+    def _split(value: str) -> list[str]:
+        import shlex
+
+        return shlex.split(value)
+
+    while pos < len(args):
+        arg = args[pos]
+        if arg == "--repo" and pos + 1 < len(args):
+            repo_path = args[pos + 1]
+            pos += 2
+        elif arg == "--cmd" and pos + 1 < len(args):
+            command = _split(args[pos + 1])
+            pos += 2
+        elif arg == "--tests" and pos + 1 < len(args):
+            test_command = _split(args[pos + 1])
+            pos += 2
+        elif arg == "--agent" and pos + 1 < len(args):
+            agent_id = args[pos + 1]
+            pos += 2
+        elif arg == "--actor" and pos + 1 < len(args):
+            actor_id = args[pos + 1]
+            pos += 2
+        elif arg == "--timeout" and pos + 1 < len(args):
+            timeout = int(args[pos + 1])
+            pos += 2
+        elif arg == "--keep":
+            keep = True
+            pos += 1
+        else:
+            print(f"Argumento desconocido: {arg}", file=sys.stderr)
+            return 1
+
+    if not command:
+        print('Falta --cmd "<comando del agente>"', file=sys.stderr)
+        return 1
+
+    from geas.runner import ExecutionRunner, RunnerConfig
+
+    agent = storage.get_agent(agent_id) if agent_id else None
+    config = RunnerConfig(
+        command=command,
+        test_command=test_command,
+        keep_worktree=keep,
+        timeout=timeout,
+        actor_id=actor_id,
+    )
+    runner = ExecutionRunner(storage)
+    try:
+        summary = runner.run_ticket(ticket_id, config, repo_path, agent=agent)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(f"execution: {summary.execution_id}")
+    print(f"ticket:    {summary.ticket_id}")
+    print(f"branch:    {summary.branch}")
+    print(f"result:    {summary.result} (rc={summary.returncode})")
+    if summary.test_status:
+        print(f"tests:     {summary.test_status}")
+    if summary.stdout.strip():
+        print("stdout:")
+        for line in summary.stdout.splitlines()[:20]:
+            print(f"  {line}")
+    if summary.stderr.strip():
+        print("stderr:")
+        for line in summary.stderr.splitlines()[:20]:
+            print(f"  {line}")
+    if summary.kept_worktree:
+        print(f"worktree:  {summary.worktree} (conservado)")
+    return 0 if summary.result == "success" else 1
 
 
 def _cmd_serve(storage: Storage, args: list[str]) -> int:

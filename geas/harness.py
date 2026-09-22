@@ -54,7 +54,12 @@ class LocalHarness:
         if valid.returncode != 0:
             raise ValueError(f"No es un repositorio Git: {repo}")
         branch_name = branch or f"geas/{ticket_id}"
-        worktree = self.worktrees_root / ticket_id
+        # Las rutas relativas se resuelven contra el repositorio: así
+        # git worktree add y run() apuntan al mismo sitio.
+        root = Path(self.worktrees_root)
+        if not root.is_absolute():
+            root = repo / root
+        worktree = root / ticket_id
         if worktree.exists():
             raise FileExistsError(f"El worktree ya existe: {worktree}")
         worktree.parent.mkdir(parents=True, exist_ok=True)
