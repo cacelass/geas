@@ -7,6 +7,10 @@ Uso:
     geas dept list <org>         Listar departamentos
     geas user list <org>         Listar usuarios
     geas agent list <org>        Listar agentes
+    geas role list <org>         Listar roles y permisos
+    geas role create <org> <name> [permiso...]   Crear rol (§7)
+    geas role grant <org> <role> <permiso>       Conceder permiso (§7)
+    geas permission list         Catálogo de permisos (§7)
     geas repo list <org>         Listar repositorios
     geas ticket list <org>       Listar tickets
     geas ticket show <id>        Ver un ticket
@@ -17,6 +21,8 @@ Uso:
     geas lock show <resource>    Ver lock de un recurso
     geas events <org>            Ver eventos recientes
     geas audit <org>             Ver log de auditoría
+    geas mcp list                Herramientas MCP (§26)
+    geas serve                   Panel web de estado (§42)
 """
 
 from __future__ import annotations
