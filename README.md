@@ -61,7 +61,9 @@ geas user create <org_id> "Ana" ana@example.com
 geas agent create <org_id> "Codex" openai gpt-5
 geas repo create <org_id> "mi-repo" github https://github.com/org/mi-repo
 geas ticket create <org_id> "Título"
-geas ticket list <org_id>
+geas ticket list <org_id>              # [free|busy] → " [libre]" / " [ocupado desde <ts> por <actor>]" (§15)
+geas ticket list <org_id> free         # solo tickets sin locks vivos (§15: todos sus archivos disponibles)
+geas ticket list <org_id> busy         # solo ocupados: badge "desde <created_at> por <actor>"
 geas ticket show <ticket_id>
 geas ticket start <ticket_id> <commit_before> <branch>
 geas ticket complete <ticket_id> <commit_after>

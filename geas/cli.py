@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from geas.models import (
@@ -31,11 +32,24 @@ from geas.models import (
     Department,
     Organization,
     Repository,
+    ResourceLock,
     Role,
     Ticket,
     User,
 )
 from geas.storage import Storage
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _lock_active(storage: Storage, resource_id: str, now: str) -> ResourceLock | None:
+    """§15: un lock está activo si no ha expirado (expires_at > now)."""
+    lock = storage.get_lock_for_resource(resource_id)
+    if lock and lock.expires_at > now:
+        return lock
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -455,16 +469,43 @@ def _cmd_ticket(storage: Storage, args: list[str]) -> int:
     sub = args[0]
     if sub == "list":
         if len(args) < 2:
-            print("Uso: geas ticket list <org_id>")
+            print("Uso: geas ticket list <org_id> [free|busy]")
             return 1
         org_id = args[1]
-        status_filter = args[2] if len(args) > 2 else None
+        status_filter = args[2] if len(args) > 2 and args[2] not in ("free", "busy") else None
+        availability = args[2] if len(args) > 2 and args[2] in ("free", "busy") else None
         tickets = storage.list_tickets(org_id, status=status_filter)
         if not tickets:
             print("No hay tickets.")
             return 0
+
+        now = _now()
         for t in tickets:
-            print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}")
+            # §15: un ticket está O C U P A D O si al menos uno de sus recursos
+            # tiene un lock activo; LIBRE si todos sus recursos están disponibles.
+            locks = [_lock_active(storage, rid, now) for rid in t.resources]
+            locks = [l for l in locks if l is not None]
+            if availability == "free" and locks:
+                continue
+            if availability == "busy" and not locks:
+                continue
+            if availability is None:
+                # §34 contrato previo: `ticket list <org>` sin filtro → sin badges
+                print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}")
+                continue
+            if availability is None:
+                # §34 previo: `ticket list <org>` sin flags → sin badges.
+                # El contrato existente pinta solo id/status/título.
+                print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}")
+                continue
+            if locks:
+                lock = locks[0]
+                actor = storage.get_user(lock.actor_id)
+                actor_name = actor.name if actor else lock.actor_id[:8]
+                badge = f"  [ocupado desde {lock.created_at} por {actor_name}]"
+            else:
+                badge = "  [libre]"
+            print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}{badge}")
         return 0
 
     elif sub == "show":
