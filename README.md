@@ -93,6 +93,23 @@ geas mcp create_ticket --title "Implementar X"
 geas mcp get_available_tasks
 ```
 
+## Proveedores Git (§18/§42)
+
+La mitad local (fetch/pull/status/branch/commit/push/diff/rollback) la
+resuelve el CLI de git. La mitad remota (PR, merge, commits) se delega
+al proveedor por API REST — stdlib pura, sin dependencias:
+
+```bash
+GEAS_GITHUB_TOKEN=ghp_...     geas ...   # GitHub  → REST api.github.com
+GEAS_GITLAB_TOKEN=glpat-...   geas ...   # GitLab  → REST gitlab.com/api/v4
+GEAS_BITBUCKET_TOKEN=user:app geas ...   # Bitbucket → REST API 2.0 (Basic)
+```
+
+Sin token, el proveedor remoto falla claro — **nunca** degrada en
+silencio al proveedor local (§42: los contratos no se mienten).
+`get_provider("local"|"self-hosted")` usa el CLI; un nombre desconocido
+también falla claro.
+
 ## Concurrencia
 
 Un recurso (archivo, dirección, API...) puede estar bloqueado por un ticket:
