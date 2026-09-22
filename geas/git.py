@@ -313,8 +313,7 @@ class ApiGitProvider(LocalGitProvider):
         else:
             path = url
         path = path.split("?")[0].rstrip("/")
-        if path.endswith(".git"):
-            path = path[:-4]
+        path = path.removesuffix(".git")
         parts = path.split("/")
         if len(parts) >= 2:
             return parts[-2], parts[-1]

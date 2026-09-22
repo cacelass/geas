@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+from typing import Self
 from urllib.error import HTTPError
 
 import pytest
@@ -34,7 +35,7 @@ def _resp(payload: dict | list) -> object:
         def __init__(self) -> None:
             self._body = body
 
-        def __enter__(self) -> "FakeResponse":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *_: object) -> bool:
