@@ -91,6 +91,10 @@ geas work pr create <ticket_id> [path]       # push + PR (gh/glab) + PR_CREATED
 geas mcp list
 geas mcp create_ticket --title "Implementar X"
 geas mcp get_available_tasks
+
+# Panel web de estado (§42, solo lectura)
+geas serve                       # http://127.0.0.1:8787/ → dashboard
+# http://127.0.0.1:8787/ticket/<id> → detalle con trazabilidad §29
 ```
 
 ## Proveedores Git (§18/§42)
