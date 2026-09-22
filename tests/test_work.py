@@ -264,6 +264,121 @@ class TestWorkFlow:
         assert storage.get_ticket(t2.id).status.value == "FREE"
 
 
+class TestWorkBranchCommitPr:
+    """Comandos del §34: work branch create, work commit, work pr create."""
+
+    def test_branch_create(self, storage, git_repo, org):
+        t = Ticket(organization_id=org.id, title="Implementar Chat")
+        storage.create_ticket(t)
+
+        from geas.work import cmd_branch
+
+        assert cmd_branch(storage, ["create", t.id, str(git_repo)]) == 0
+
+        ticket = storage.get_ticket(t.id)
+        assert ticket.branch
+        branch = ticket.branch
+
+        # La branch existe en git
+        r = subprocess.run(
+            ["git", "-C", str(git_repo), "branch", "--list", branch],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert branch in r.stdout
+
+        # Queda auditoría
+        assert any(a.action == "BRANCH_CREATED" for a in storage.list_audit(org.id))
+
+    def test_branch_create_rejects_existing_branch(self, storage, git_repo, org):
+        t = Ticket(organization_id=org.id, title="X", branch="ya-existe")
+        storage.create_ticket(t)
+
+        from geas.work import cmd_branch
+
+        assert cmd_branch(storage, ["create", t.id, str(git_repo)]) != 0
+
+    def test_commit(self, storage, git_repo, org):
+        t = Ticket(organization_id=org.id, title="Cambio")
+        storage.create_ticket(t)
+
+        from geas.work import cmd_branch, cmd_commit
+
+        cmd_branch(storage, ["create", t.id, str(git_repo)])
+        (git_repo / "Chat.py").write_text(
+            "class Chat:\n    def send(self):\n        pass\n"
+        )
+
+        assert cmd_commit(storage, [t.id, str(git_repo), "trabajo"]) == 0
+
+        # El commit existe en la branch del ticket
+        r = subprocess.run(
+            ["git", "-C", str(git_repo), "log", "--oneline", "-1"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "trabajo" in r.stdout
+
+        # Evento COMMIT_REGISTERED (§30)
+        events = {e.event_type for e in storage.list_events(org.id)}
+        assert "COMMIT_REGISTERED" in events
+
+    def test_commit_no_changes(self, storage, git_repo, org):
+        t = Ticket(organization_id=org.id, title="Sin cambios")
+        storage.create_ticket(t)
+
+        from geas.work import cmd_branch, cmd_commit
+
+        cmd_branch(storage, ["create", t.id, str(git_repo)])
+        assert cmd_commit(storage, [t.id, str(git_repo)]) != 0
+
+    def test_pr_create_pushes_branch(self, storage, git_repo, org, tmp_path):
+        t = Ticket(organization_id=org.id, title="Feature")
+        storage.create_ticket(t)
+
+        from geas.work import cmd_branch, cmd_pr
+
+        cmd_branch(storage, ["create", t.id, str(git_repo)])
+        # Hacer un commit para que haya algo que pushear
+        (git_repo / "Chat.py").write_text("class Chat:\n    x = 1\n")
+        subprocess.run(
+            ["git", "-C", str(git_repo), "add", "."], capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(git_repo), "commit", "-m", "wip"],
+            capture_output=True,
+            check=True,
+        )
+
+        # Remote local (bare) para que el push sea real
+        bare = tmp_path / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(bare)], capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(git_repo), "remote", "set-url", "origin", str(bare)],
+            capture_output=True,
+            check=True,
+        )
+
+        assert cmd_pr(storage, ["create", t.id, str(git_repo)]) == 0
+
+        # La branch llegó al remote
+        r = subprocess.run(
+            ["git", "--git-dir", str(bare), "branch", "--list", t.branch],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert t.branch in r.stdout
+
+        # Evento PR_CREATED (§30)
+        events = {e.event_type for e in storage.list_events(org.id)}
+        assert "PR_CREATED" in events
+
+
 class TestWorkDiffRollback:
     def test_diff_and_rollback(self, storage, git_repo, org):
         from geas.git import LocalGitProvider

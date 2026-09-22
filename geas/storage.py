@@ -505,7 +505,7 @@ class Storage:
 
     def update_ticket_fields(self, ticket_id: str, **fields: object) -> bool:
         """Actualiza únicamente los campos de ticket modificables por la API."""
-        allowed = {"title", "description", "priority", "result", "feedback"}
+        allowed = {"title", "description", "priority", "result", "feedback", "branch"}
         updates = {name: value for name, value in fields.items() if name in allowed}
         if not updates:
             return False

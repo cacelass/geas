@@ -7,6 +7,9 @@ geas.work — Comandos de trabajo de Geas (spec §34).
     work tasks           Tickets disponibles para el actor actual (§17)
     work context         Contexto del repo actual
     work ticket <id>     Mostrar un ticket
+    work branch create   Crear la branch del ticket (§34)
+    work commit <id>     Commit en la branch del ticket (§34)
+    work pr create <id>  Push + PR de la branch del ticket (§34)
     work start <id>      Empezar ticket: claim + commit_before (§24)
     work finish <id>     Terminar ticket: commit_after + release locks (§24)
     work diff <id>       Diff entre commit_before y commit_after (§11)
@@ -23,6 +26,8 @@ from pathlib import Path
 
 from geas.git import LocalGitProvider
 from geas.models import (
+    AuditLog,
+    Event,
     ResourceLock,
     TicketStatus,
 )
@@ -543,6 +548,160 @@ def cmd_rollback(storage: Storage, args: list[str]) -> int:
     return 0 if ok else 1
 
 
+def cmd_branch(storage: Storage, args: list[str]) -> int:
+    """work branch create <id> [path] — crea la branch del ticket (§34).
+
+    No reclama el ticket: solo crea la branch y la registra. El claim lo
+    hace `work start` o el runner.
+    """
+    if len(args) < 2 or args[0] != "create":
+        print("Uso: work branch create <ticket_id> [path]", file=sys.stderr)
+        return 1
+    ticket_id, path = args[1], args[2] if len(args) > 2 else "."
+
+    ticket = storage.get_ticket(ticket_id)
+    if not ticket:
+        print(f"Ticket no encontrado: {ticket_id}", file=sys.stderr)
+        return 1
+    if ticket.branch:
+        print(f"El ticket ya tiene branch: {ticket.branch}", file=sys.stderr)
+        return 1
+
+    branch = f"{ticket.id[:8]}-{ticket.title.replace(' ', '-')[:20]}"
+    g = LocalGitProvider(path)
+    if not g.create_branch(branch):
+        print("BRANCH CREATE FAILED", file=sys.stderr)
+        return 1
+    storage.update_ticket_fields(ticket.id, branch=branch)
+    storage.create_audit(
+        AuditLog(
+            actor_id="me",
+            action="BRANCH_CREATED",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"branch": branch},
+        )
+    )
+
+    print(f"BRANCH: {branch}")
+    return 0
+
+
+def cmd_commit(storage: Storage, args: list[str]) -> int:
+    """work commit <id> [path] [mensaje] — commit en la branch del ticket (§34).
+
+    Registra el evento COMMIT_REGISTERED (§30). El commit_after del ticket
+    solo lo fija `work finish`, cuando el trabajo está completo.
+    """
+    if not args:
+        print("Uso: work commit <ticket_id> [path] [mensaje]", file=sys.stderr)
+        return 1
+    ticket_id = args[0]
+    path = args[1] if len(args) > 1 else "."
+    message = " ".join(args[2:]) if len(args) > 2 else f"Geas: trabajo {ticket_id}"
+
+    ticket = storage.get_ticket(ticket_id)
+    if not ticket:
+        print(f"Ticket no encontrado: {ticket_id}", file=sys.stderr)
+        return 1
+
+    g = LocalGitProvider(path)
+    if ticket.branch:
+        current = g.status().branch
+        if current != ticket.branch:
+            g._run(["checkout", ticket.branch])
+    if g.status().clean and not g.status().untracked:
+        print("NO CHANGES — nada que commitear", file=sys.stderr)
+        return 1
+
+    g._run(["add", "."])
+    commit = g.commit(message)
+    if commit is None:
+        print("COMMIT FAILED", file=sys.stderr)
+        return 1
+
+    storage.create_event(
+        Event(
+            event_type="COMMIT_REGISTERED",
+            organization_id=ticket.organization_id,
+            actor_id="me",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"commit": commit.sha},
+        )
+    )
+    storage.create_audit(
+        AuditLog(
+            actor_id="me",
+            action="COMMIT_REGISTERED",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"commit": commit.sha},
+        )
+    )
+    print(f"COMMIT {commit.sha[:8]} en {ticket.branch or g.status().branch}")
+    return 0
+
+
+def cmd_pr(storage: Storage, args: list[str]) -> int:
+    """work pr create <id> [path] — push + PR de la branch del ticket (§34).
+
+    El push es contra el remote del repo. El PR requiere el CLI del
+    proveedor (gh, glab); sin él, el push queda hecho y se avisa.
+    """
+    if len(args) < 2 or args[0] != "create":
+        print("Uso: work pr create <ticket_id> [path]", file=sys.stderr)
+        return 1
+    ticket_id, path = args[1], args[2] if len(args) > 2 else "."
+
+    ticket = storage.get_ticket(ticket_id)
+    if not ticket:
+        print(f"Ticket no encontrado: {ticket_id}", file=sys.stderr)
+        return 1
+    if not ticket.branch:
+        print(
+            "El ticket no tiene branch — usa 'work branch create' o 'work start'",
+            file=sys.stderr,
+        )
+        return 1
+
+    g = LocalGitProvider(path)
+    if g.status().branch != ticket.branch:
+        g._run(["checkout", ticket.branch])
+    push_ok = g.push(ticket.branch)
+    if not push_ok:
+        print("PUSH FAILED", file=sys.stderr)
+        return 1
+
+    pr_url = g.create_pr(f"Ticket {ticket.id}: {ticket.title}", ticket.branch)
+    storage.create_event(
+        Event(
+            event_type="PR_CREATED",
+            organization_id=ticket.organization_id,
+            actor_id="me",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"branch": ticket.branch, "pr_url": pr_url or ""},
+        )
+    )
+    storage.create_audit(
+        AuditLog(
+            actor_id="me",
+            action="PR_CREATED",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"branch": ticket.branch, "pr_url": pr_url or ""},
+        )
+    )
+
+    print(f"PUSH: {ticket.branch}")
+    if pr_url:
+        print(f"PR: {pr_url}")
+    else:
+        print("PR: no creado (falta el CLI del proveedor: gh/glab)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -563,6 +722,9 @@ def main(argv: list[str] | None = None) -> int:
             "tasks": cmd_tasks,
             "context": cmd_context,
             "ticket": cmd_ticket,
+            "branch": cmd_branch,
+            "commit": cmd_commit,
+            "pr": cmd_pr,
             "start": cmd_start,
             "finish": cmd_finish,
             "diff": cmd_diff,
