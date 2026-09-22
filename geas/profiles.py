@@ -107,3 +107,14 @@ def profile_flags(name: str | None) -> ProfileFlags:
     Desconocidos y vacíos caen en MINIMAL — el default de Copier (§35/§36)."""
     key = (name or "").strip().upper()
     return PROFILES.get(key, MINIMAL)
+
+
+def backend_for(name: str | None) -> str:
+    """Backend de almacenamiento que el perfil reclama (§42).
+
+    LEE el flag `postgres` que §36 ya declaró en el perfil (TEAM y
+    ENTERPRISE → True), pero la traducción flag→backend es lógica pura:
+    MINIMAL → "sqlite", TEAM/ENTERPRISE → "postgres". El driver real
+    (psycopg + instancia) queda como deuda de infra anotada — igual que
+    copier §35/§36: el contrato se fija, la infra se declara pendiente."""
+    return "postgres" if profile_flags(name).postgres else "sqlite"

@@ -13,6 +13,7 @@ from geas.profiles import (
     MINIMAL,
     PROFILES,
     TEAM,
+    backend_for,
     profile_flags,
 )
 
@@ -78,3 +79,63 @@ def test_enabled_enumera_solo_features_activas():
 )
 def test_profile_flags_mapeo_directo(name, expected):
     assert profile_flags(name) is expected
+
+
+# §42 — PostgreSQL (MVP 2, infra declarativa)
+#
+# La spec §42 (docs/SPEC.md) declara PostgreSQL como backend de
+# TEAM/ENTERPRISE (§602: "los locks se gestionan mediante operaciones
+# transaccionales en PostgreSQL"; §1046: "los agentes no acceden
+# directamente a PostgreSQL"). El flag `postgres` vive en profiles.py
+# (§36) pero ningún test lo fija todavía: es lo que añade este bloque.
+# El driver real (psycopg + instancia) queda como deuda de infra,
+# igual que copier §35: se fija el contrato, no la infra.
+
+
+@pytest.mark.parametrize(
+    ("profile", "postgres"),
+    [
+        (MINIMAL, False),
+        (TEAM, True),        # §42 MVP 2: TEAM usa PostgreSQL por defecto
+        (ENTERPRISE, True),  # §42 MVP 2: ENTERPRISE usa PostgreSQL
+    ],
+)
+def test_profile_postgres_flag_contrato_42(profile, postgres):
+    """§42: el flag `postgres` declara qué perfiles cablean PG (#602/§1046)."""
+    assert profile.postgres is postgres
+
+
+def test_profile_postgres_no_afecta_flags_existentes():
+    """§42: `postgres` es aditivo — TEAM/ENTERPRISE lo activan sin apagar
+    nada de lo que §36 ya declaró (web_ui, mcp, rbac, audit...)."""
+    team_enabled = {f for f in TEAM.enabled()}
+    assert "web_ui" in team_enabled
+    assert "mcp_enabled" in team_enabled
+    assert "rbac" in team_enabled
+    assert "audit" in team_enabled
+    assert "postgres" in team_enabled  # §42 añade la feature, no la sustituye
+
+
+def test_backend_for_costura_42():
+    """§42: la costura flag→backend. `backend_for` traduce el flag
+    declarativo §36 (`postgres: bool` de TEAM/ENTERPRISE) a la elección
+    de backend que Storage debe usar (§602). Nunca devuelve algo fuera
+    de la matriz declarada.
+
+    MINIMAL → sqlite (§15, retrocompatible). TEAM/ENTERPRISE → postgres
+    (§602: locks transaccionales en PostgreSQL). El driver real queda
+    como deuda de infra anotada (patrón copier §35/§36): pedir postgres
+    sin driver falla claro en Storage, nunca cae en silencio a SQLite.
+    """
+    assert backend_for("MINIMAL") == "sqlite"
+    assert backend_for("TEAM") == "postgres"
+    assert backend_for("ENTERPRISE") == "postgres"
+    # Desconocidos y vacíos → MINIMAL (§35/§36 default) → sqlite
+    assert backend_for(None) == "sqlite"
+    assert backend_for("") == "sqlite"
+    assert backend_for("NO_EXISTE") == "sqlite"
+    # §42 aditivo NO se duplica aquí: que pedir postgres no apaga
+    # web_ui/rbac/audit lo asegura test_profile_postgres_no_afecta_
+    # flags_existentes (§36 ya lo cablea). Estas líneas eran AttributeError
+    # = .team/.enterprise no son flags de ProfileFlags (son NOMBRES de
+    # perfil) — el contrato aditivo vive en el test §36.
