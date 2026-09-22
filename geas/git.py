@@ -15,9 +15,15 @@ El diff entre commit_before y commit_after permite rollback (§11):
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from abc import ABC, abstractmethod
+from base64 import b64encode
 from dataclasses import dataclass, field
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 
 @dataclass
@@ -241,13 +247,330 @@ class LocalGitProvider(GitProvider):
         return r.returncode == 0
 
 
-def get_provider(provider: str = "local") -> GitProvider:
-    """Factory: devuelve el proveedor según el nombre."""
+class ApiProviderError(RuntimeError):
+    """Error de un proveedor remoto: token, red o respuesta de la API.
+
+    Es la frontera honesta del §42: un proveedor remoto que no puede
+    operar falla claro, NUNCA cae en silencio al CLI local — eso
+    mentiría el contrato (§18: el proveedor es quien dice ser).
+    """
+
+
+class ApiGitProvider(LocalGitProvider):
+    """Proveedor Git remoto por API REST (GitHub, GitLab, Bitbucket).
+
+    La mitad local (fetch/pull/status/create_branch/commit/push/diff/
+    rollback/get_head) la hereda de LocalGitProvider: se opera sobre el
+    working copy real y `push` ya habla con el remote vía git CLI.
+
+    La mitad remota (create_pr/merge/get_commits) usa la API del
+    proveedor con stdlib pura (urllib) — el proyecto no añade deps.
+    El token sale del entorno (GEAS_*_TOKEN) o del constructor; sin
+    token la construcción falla claro en vez de degradarse al local
+    (§42: los contratos no se mienten en silencio).
+    """
+
+    api_base = ""
+    token_env = ""
+    provider_name = ""
+
+    def __init__(
+        self,
+        repo_path: str | None = None,
+        owner: str | None = None,
+        repo: str | None = None,
+        token: str | None = None,
+    ):
+        super().__init__(repo_path)
+        self._token = token if token is not None else os.environ.get(self.token_env, "")
+        if not self._token:
+            raise ApiProviderError(
+                f"{self.provider_name}: falta token de API — define {self.token_env}"
+                " (o pásalo al constructor). Nunca se cae en silencio al proveedor"
+                " local (§18/§42): el contrato del proveedor no se miente."
+            )
+        parsed_owner, parsed_repo = self._parse_remote()
+        self.owner = owner or parsed_owner
+        self.repo = repo or parsed_repo
+        if not self.owner or not self.repo:
+            raise ApiProviderError(
+                f"{self.provider_name}: no se pudo identificar owner/repo — ¿tiene"
+                " el repo un remote `origin` (o pásalos al constructor owner=/repo=)?"
+            )
+
+    # ─── Remote origin → owner/repo ────────────────────────────────────
+
+    def _parse_remote(self) -> tuple[str | None, str | None]:
+        r = self._run(["remote", "get-url", "origin"])
+        url = r.stdout.strip()
+        if not url:
+            return None, None
+        if "://" in url:  # https://host/owner/repo.git | ssh://git@host/owner/repo.git
+            _, _, rest = url.partition("://")
+            path = rest.split("/", 1)[1] if "/" in rest else ""
+        elif "@" in url and ":" in url:  # git@host:owner/repo.git
+            path = url.split("@", 1)[1].split(":", 1)[1]
+        else:
+            path = url
+        path = path.split("?")[0].rstrip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        parts = path.split("/")
+        if len(parts) >= 2:
+            return parts[-2], parts[-1]
+        return None, None
+
+    # ─── HTTP (stdlib, zero deps) ──────────────────────────────────────
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        params: dict | None = None,
+    ) -> dict | list | None:
+        url = self.api_base + path
+        if params:
+            url += "?" + urlencode(sorted(params.items()))
+        headers: dict[str, str] = {
+            "Accept": "application/json",
+            "User-Agent": "geas",
+            "Authorization": self._auth_header(),
+        }
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        request = Request(url, data=data, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=30) as response:
+                payload = response.read()
+                if not payload:
+                    return None
+                return json.loads(payload)
+        except HTTPError as exc:
+            detail = (
+                exc.read().decode(errors="replace")[:300]
+                if exc.fp is not None
+                else str(exc)
+            )
+            raise ApiProviderError(
+                f"{self.provider_name}: API {exc.code} en {path}: {detail}"
+            ) from exc
+        except URLError as exc:
+            raise ApiProviderError(
+                f"{self.provider_name}: sin red hacia {self.api_base}: {exc.reason}"
+            ) from exc
+
+    def _auth_header(self) -> str:
+        return f"Bearer {self._token}"
+
+    # Las operaciones locales se heredan de LocalGitProvider.
+    # create_pr / merge / get_commits los implementa cada proveedor.
+
+
+class GitHubProvider(ApiGitProvider):
+    """GitHub vía REST (https://docs.github.com/rest)."""
+
+    api_base = "https://api.github.com"
+    token_env = "GEAS_GITHUB_TOKEN"
+    provider_name = "github"
+
+    def _find_open_pr(self, branch: str) -> dict | None:
+        data = self._request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/pulls",
+            params={"state": "open", "head": f"{self.owner}:{branch}", "per_page": 100},
+        )
+        return data[0] if data else None
+
+    def create_pr(self, title: str, branch: str, base: str = "main") -> str | None:
+        data = self._request(
+            "POST",
+            f"/repos/{self.owner}/{self.repo}/pulls",
+            body={"title": title, "head": branch, "base": base},
+        )
+        return (data or {}).get("html_url")
+
+    def merge(self, branch: str) -> bool:
+        pr = self._find_open_pr(branch)
+        if not pr:
+            return False
+        data = self._request(
+            "PUT", f"/repos/{self.owner}/{self.repo}/pulls/{pr['number']}/merge"
+        )
+        return bool(data and data.get("merged"))
+
+    def get_commits(
+        self, since: str | None = None, limit: int = 10
+    ) -> list[CommitInfo]:
+        params: dict[str, str | int] = {"per_page": limit}
+        if since:
+            params["since"] = since  # fecha ISO-8601 (nativo de la API)
+        data = self._request(
+            "GET", f"/repos/{self.owner}/{self.repo}/commits", params=params
+        ) or []
+        result: list[CommitInfo] = []
+        for c in data:
+            commit = c.get("commit") or {}
+            author = commit.get("author") or {}
+            message = (commit.get("message") or "").splitlines()[0]
+            result.append(
+                CommitInfo(
+                    sha=c.get("sha", ""),
+                    message=message,
+                    author=author.get("name", ""),
+                    timestamp=author.get("date", ""),
+                )
+            )
+        return result
+
+
+class GitLabProvider(ApiGitProvider):
+    """GitLab vía REST (API v4)."""
+
+    api_base = "https://gitlab.com/api/v4"
+    token_env = "GEAS_GITLAB_TOKEN"
+    provider_name = "gitlab"
+
+    def _project(self) -> str:
+        # GitLab codifica la ruta del proyecto (owner/repo) en el path.
+        return quote(f"{self.owner}/{self.repo}", safe="")
+
+    def _find_open_mr(self, branch: str) -> dict | None:
+        data = self._request(
+            "GET",
+            f"/projects/{self._project()}/merge_requests",
+            params={"state": "opened", "source_branch": branch, "per_page": 100},
+        )
+        return data[0] if data else None
+
+    def create_pr(self, title: str, branch: str, base: str = "main") -> str | None:
+        data = self._request(
+            "POST",
+            f"/projects/{self._project()}/merge_requests",
+            body={"title": title, "source_branch": branch, "target_branch": base},
+        )
+        return (data or {}).get("web_url")
+
+    def merge(self, branch: str) -> bool:
+        mr = self._find_open_mr(branch)
+        if not mr:
+            return False
+        data = self._request(
+            "PUT", f"/projects/{self._project()}/merge_requests/{mr['iid']}/merge"
+        )
+        return bool(data and data.get("state") == "merged")
+
+    def get_commits(
+        self, since: str | None = None, limit: int = 10
+    ) -> list[CommitInfo]:
+        params: dict[str, str | int] = {"per_page": limit}
+        if since:
+            params["since"] = since  # fecha ISO-8601 (nativo de la API)
+        data = self._request(
+            "GET", f"/projects/{self._project()}/repository/commits", params=params
+        ) or []
+        result: list[CommitInfo] = []
+        for c in data:
+            result.append(
+                CommitInfo(
+                    sha=c.get("id", ""),
+                    message=c.get("title", ""),
+                    author=c.get("author_name", ""),
+                    timestamp=c.get("committed_date", ""),
+                )
+            )
+        return result
+
+
+class BitbucketProvider(ApiGitProvider):
+    """Bitbucket vía REST (API 2.0).
+
+    Los app passwords usan HTTP Basic con `usuario:app_password` — el
+    token del entorno GEAS_BITBUCKET_TOKEN lleva ese formato exacto.
+    """
+
+    api_base = "https://api.bitbucket.org/2.0"
+    token_env = "GEAS_BITBUCKET_TOKEN"
+    provider_name = "bitbucket"
+
+    def _auth_header(self) -> str:
+        return "Basic " + b64encode(self._token.encode()).decode()
+
+    def _find_open_pr(self, branch: str) -> dict | None:
+        data = self._request(
+            "GET",
+            f"/repositories/{self.owner}/{self.repo}/pullrequests",
+            params={"state": "OPEN", "pagelen": 100},
+        ) or {}
+        for pr in data.get("values", []):
+            source = (pr.get("source") or {}).get("branch") or {}
+            if source.get("name") == branch:
+                return pr
+        return None
+
+    def create_pr(self, title: str, branch: str, base: str = "main") -> str | None:
+        data = self._request(
+            "POST",
+            f"/repositories/{self.owner}/{self.repo}/pullrequests",
+            body={
+                "title": title,
+                "source": {"branch": {"name": branch}},
+                "destination": {"branch": {"name": base}},
+            },
+        )
+        return (data or {}).get("links", {}).get("html", {}).get("href")
+
+    def merge(self, branch: str) -> bool:
+        pr = self._find_open_pr(branch)
+        if not pr:
+            return False
+        data = self._request(
+            "POST",
+            f"/repositories/{self.owner}/{self.repo}/pullrequests/{pr['id']}/merge",
+        )
+        return bool(data and data.get("state") == "MERGED")
+
+    def get_commits(
+        self, since: str | None = None, limit: int = 10
+    ) -> list[CommitInfo]:
+        params: dict[str, str | int] = {"pagelen": limit}
+        data = self._request(
+            "GET", f"/repositories/{self.owner}/{self.repo}/commits", params=params
+        ) or {}
+        result: list[CommitInfo] = []
+        for c in data.get("values", []):
+            result.append(
+                CommitInfo(
+                    sha=c.get("hash", ""),
+                    message=(c.get("message") or "").splitlines()[0],
+                    author=(c.get("author") or {}).get("raw", ""),
+                    timestamp=c.get("date", ""),
+                )
+            )
+        return result
+
+
+def get_provider(provider: str = "local", repo_path: str | None = None, **kwargs) -> GitProvider:
+    """Factory (§18): devuelve el proveedor según el nombre.
+
+    local / self-hosted → CLI de git contra el working copy.
+    github / gitlab / bitbucket → API REST del proveedor; exigen token
+    (GEAS_*_TOKEN) y NUNCA degradan en silencio al local (§42).
+    Un nombre desconocido falla claro — no se hace pasar por otro.
+    """
+    if provider in ("local", "self-hosted"):
+        return LocalGitProvider(repo_path)
     providers = {
-        "local": LocalGitProvider,
-        "github": LocalGitProvider,  # MVP: GitHub vía CLI de git + gh
-        "gitlab": LocalGitProvider,
-        "bitbucket": LocalGitProvider,
+        "github": GitHubProvider,
+        "gitlab": GitLabProvider,
+        "bitbucket": BitbucketProvider,
     }
-    cls = providers.get(provider, LocalGitProvider)
-    return cls()
+    cls = providers.get((provider or "").lower())
+    if cls is None:
+        raise ValueError(
+            f"Proveedor Git desconocido: {provider!r} (local, self-hosted, "
+            "github, gitlab, bitbucket)"
+        )
+    return cls(repo_path, **kwargs)
