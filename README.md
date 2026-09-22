@@ -58,7 +58,13 @@ geas org list                     # listar organizaciones
 geas dept list <org_id>           # listar departamentos
 geas dept create <org_id> "Backend"
 geas user create <org_id> "Ana" ana@example.com
+geas user create <org_id> "Ana" ana@example.com <dept_id> <role_id>   # rol opcional
 geas agent create <org_id> "Codex" openai gpt-5
+geas agent create <org_id> "Codex" openai gpt-5 <dept_id> <role_id>   # rol opcional
+geas role list <org_id>                    # roles y sus permisos
+geas role create <org_id> "revisor" ticket:read ticket:update   # valida contra el catálogo §7
+geas role grant <org_id> <role_id> git:pr  # concede un permiso (idempotente)
+geas permission list                       # catálogo completo de permisos (§7)
 geas repo create <org_id> "mi-repo" github https://github.com/org/mi-repo
 geas ticket create <org_id> "Título"
 geas ticket list <org_id>              # [free|busy] → " [libre]" / " [ocupado desde <ts> por <actor>]" (§15)
