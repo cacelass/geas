@@ -130,6 +130,7 @@ class ExecutionRunner:
                 "execution_id": execution.id,
                 "agent": agent.name if agent else "",
             },
+            actor_id=config.actor_id,
         )
 
         # Worktree aislado: aquí trabaja el agente y aquí corren sus tests
@@ -157,6 +158,7 @@ class ExecutionRunner:
                 "result": result,
                 "returncode": process.returncode,
             },
+            actor_id=config.actor_id,
         )
 
         kept = False
@@ -209,12 +211,18 @@ class ExecutionRunner:
         )
         return status
 
-    def _event(self, event_type: str, ticket, metadata: dict | None = None) -> None:
+    def _event(
+        self,
+        event_type: str,
+        ticket,
+        metadata: dict | None = None,
+        actor_id: str = "runner",
+    ) -> None:
         self.storage.create_event(
             Event(
                 event_type=event_type,
                 organization_id=ticket.organization_id,
-                actor_id="runner",
+                actor_id=actor_id,
                 resource_type="ticket",
                 resource_id=ticket.id,
                 metadata=metadata or {},

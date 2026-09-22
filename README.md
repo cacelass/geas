@@ -78,7 +78,12 @@ geas work tasks <actor_id>        # tickets disponibles para un actor
 geas work start <ticket_id>       # reclamar e iniciar un ticket
 geas work finish <ticket_id>      # registrar commit y liberar locks
 geas work diff <ticket_id>        # cambios entre los commits del ticket
-geas work rollback <ticket_id>    # revertir el trabajo de un ticket
+geas work rollback <ticket_id>    # revertir el trabajo de un ticket (§11)
+
+# Branches y PRs por ticket (§34)
+geas work branch create <ticket_id> [path]   # branch geas/<id> + BRANCH_CREATED
+geas work commit <ticket_id> [path] [msg]    # commit en la branch + §30
+geas work pr create <ticket_id> [path]       # push + PR (gh/glab) + PR_CREATED
 
 # Herramientas MCP para agentes
 geas mcp list
