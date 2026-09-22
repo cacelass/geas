@@ -16,25 +16,7 @@ from urllib.parse import urlparse
 
 from geas.mcp import TOOLS, GeasMcp
 from geas.storage import Storage
-
-INDEX_HTML = """<!doctype html>
-<html lang="es"><meta charset="utf-8"><title>Geas</title>
-<style>body{font:16px system-ui;max-width:800px;margin:3rem auto}input,button{padding:.5rem;margin:.2rem}pre{background:#111;color:#ddd;padding:1rem;overflow:auto}</style>
-<h1>Geas · Orchestrator</h1>
-<p>Consulta las tareas que puede ejecutar un actor.</p>
-<label>Actor <input id="actor" autocomplete="off"></label>
-<label>Organización <input id="org" autocomplete="off"></label>
-<button onclick="tasks()">Ver tareas disponibles</button>
-<pre id="output">Listo.</pre>
-<script>
-async function tasks() {
-  const output = document.querySelector('#output');
-  const response = await fetch('/api/tools/get_available_tasks', {
-    method: 'POST', headers: {'Content-Type':'application/json',
-      'X-Geas-Actor': actor.value, 'X-Geas-Organization': org.value}, body: '{}'});
-  output.textContent = JSON.stringify(await response.json(), null, 2);
-}
-</script></html>"""
+from geas.webui import render_dashboard, render_ticket
 
 
 class GeasHttpServer(HTTPServer):
@@ -59,6 +41,14 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _html(self, status: HTTPStatus, body: str) -> None:
+        encoded = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/health":
@@ -68,12 +58,15 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"tools": TOOLS})
             return
         if path == "/":
-            body = INDEX_HTML.encode()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._html(HTTPStatus.OK, render_dashboard(self.server.storage))
+            return
+        if path.startswith("/ticket/"):
+            ticket_id = path.removeprefix("/ticket/")
+            page = render_ticket(self.server.storage, ticket_id)
+            if page is not None:
+                self._html(HTTPStatus.OK, page)
+                return
+            self._html(HTTPStatus.NOT_FOUND, "<h1>404</h1><p>Ticket no encontrado.</p>")
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "NOT_FOUND"})
 
