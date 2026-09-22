@@ -153,6 +153,20 @@ class Storage:
         ).fetchall()
         return [_row_to_role(r) for r in rows]
 
+    def add_permission_to_role(self, role_id: str, permission: str) -> bool:
+        """§7: añade un permiso a un rol existente (idempotente)."""
+        role = self.get_role(role_id)
+        if role is None:
+            return False
+        if permission not in role.permissions:
+            role.permissions.append(permission)
+            self.conn.execute(
+                "UPDATE roles SET permissions = ? WHERE id = ?",
+                (json.dumps(role.permissions), role_id),
+            )
+            self.conn.commit()
+        return True
+
     # ─── Users ──────────────────────────────────────────────────────────
 
     def create_user(self, user: User) -> User:

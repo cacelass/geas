@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from geas.models import (
+    DEFAULT_PERMISSIONS,
     DEFAULT_ROLES,
     Agent,
     Department,
@@ -38,6 +39,9 @@ from geas.models import (
     User,
 )
 from geas.storage import Storage
+
+# Catálogo de permisos del §7 — lo que un rol puede declarar.
+ALL_PERMISSIONS = set(DEFAULT_PERMISSIONS)
 
 
 def _now() -> str:
@@ -83,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_org(storage, args)
         elif cmd == "dept":
             return _cmd_dept(storage, args)
+        elif cmd == "role":
+            return _cmd_role(storage, args)
+        elif cmd == "permission":
+            return _cmd_permission(storage, args)
         elif cmd == "user":
             return _cmd_user(storage, args)
         elif cmd == "agent":
@@ -171,6 +179,69 @@ def _cmd_dept(storage: Storage, args: list[str]) -> int:
     return 1
 
 
+def _cmd_permission(storage: Storage, args: list[str]) -> int:
+    """geas permission list — catálogo de permisos del §7."""
+    if not args or args[0] != "list":
+        print("Uso: geas permission list")
+        return 1
+    for permission in DEFAULT_PERMISSIONS:
+        print(f"  {permission}")
+    return 0
+
+
+def _cmd_role(storage: Storage, args: list[str]) -> int:
+    """geas role list|create|grant — RBAC del §7/§42."""
+    if not args:
+        print("Uso: geas role list|create|grant ...")
+        return 1
+    sub = args[0]
+    if sub == "list":
+        if len(args) < 2:
+            print("Uso: geas role list <org_id>")
+            return 1
+        roles = storage.list_roles(args[1])
+        if not roles:
+            print("No hay roles.")
+            return 0
+        for r in roles:
+            perms = ", ".join(r.permissions) if r.permissions else "(sin permisos)"
+            print(f"  {r.id[:8]}  {r.name}  [{perms}]")
+        return 0
+    if sub == "create":
+        if len(args) < 3:
+            print("Uso: geas role create <org_id> <name> [permission...]")
+            return 1
+        requested = args[3:]
+        unknown = [p for p in requested if p not in ALL_PERMISSIONS]
+        if unknown:
+            print(
+                f"Permisos desconocidos (§7): {', '.join(unknown)}",
+                file=sys.stderr,
+            )
+            return 1
+        role = Role(
+            organization_id=args[1], name=args[2], permissions=list(requested)
+        )
+        storage.create_role(role)
+        print(f"Rol creado: {role.id[:8]}  {role.name}")
+        return 0
+    if sub == "grant":
+        if len(args) < 4:
+            print("Uso: geas role grant <org_id> <role_id> <permission>")
+            return 1
+        if args[3] not in ALL_PERMISSIONS:
+            print(f"Permiso desconocido (§7): {args[3]}", file=sys.stderr)
+            return 1
+        ok = storage.add_permission_to_role(args[2], args[3])
+        if not ok:
+            print(f"Rol no encontrado: {args[2]}", file=sys.stderr)
+            return 1
+        print(f"Permiso concedido: {args[2][:8]} + {args[3]}")
+        return 0
+    print(f"Subcomando desconocido: role {sub}", file=sys.stderr)
+    return 1
+
+
 def _cmd_user(storage: Storage, args: list[str]) -> int:
     if not args:
         print("Uso: geas user list|create ...")
@@ -228,15 +299,17 @@ def _cmd_agent(storage: Storage, args: list[str]) -> int:
         return 0
     if sub == "create":
         if len(args) < 4:
-            print("Uso: geas agent create <org_id> <name> <provider> <model> [dept_id]")
+            print("Uso: geas agent create <org_id> <name> <provider> <model> [dept_id] [role_id]")
             return 1
         dept_id = args[5] if len(args) > 5 else None
+        role_id = args[6] if len(args) > 6 else None
         a = Agent(
             organization_id=args[1],
             name=args[2],
             provider=args[3],
             model=args[4],
             department_id=dept_id,
+            role_id=role_id,
         )
         storage.create_agent(a)
         print(f"Agente creado: {a.id[:8]}  {a.name} ({args[3]}/{args[4]})")
