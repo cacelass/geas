@@ -490,3 +490,14 @@ class TestAudit:
         logs = storage.list_audit(org.id)
         assert len(logs) == 1
         assert logs[0].action == "LOCK_RESOURCE"
+
+
+def test_storage_backend_postgres_sin_driver_falla_claro():
+    """§42: pedir backend postgres SIN driver/instancia lanza error claro
+    (NotImplementedError con mensaje §602/§1046), NUNCA cae en silencio
+    a SQLite — eso mentiría el contrato §1046 («los agentes no acceden
+    directamente a PostgreSQL»). El driver psycopg + instancia real queda
+    como deuda de infra explícita (patrón copier §35/§36), pero el error
+    es honesto y no se puede confundir con un fallo del perfil."""
+    with pytest.raises(NotImplementedError, match="§42"):
+        Storage("nunca-se-crea.db", backend="postgres")

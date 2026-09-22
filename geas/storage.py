@@ -33,8 +33,20 @@ from geas.models import (
 class Storage:
     """Almacén SQLite para Geas."""
 
-    def __init__(self, db_path: str | Path = "geas.db"):
+    def __init__(self, db_path: str | Path = "geas.db", backend: str = "sqlite"):
         self.db_path = Path(db_path)
+        # §42: backend declarado por el perfil (§1046 — los agentes
+        # no acceden directamente a PostgreSQL). SQLite es el
+        # default retrocompatible; pedir postgres sin driver
+        # falla claro en vez de caer en silencio a SQLite.
+        self.backend = backend
+        if backend == "postgres":
+            raise NotImplementedError(
+                "§42: backend postgres requiere driver psycopg + "
+                "instancia PostgreSQL (deuda de infra, igual que copier "
+                "§35/§36). Añade geas[postgres] a tus deps e inyecta la "
+                "conexión para cablearlo."
+            )
         # El servidor HTTP atiende en un hilo distinto al de inicialización.
         # La API usa HTTPServer (un solo consumidor), y SQLite sigue
         # serializando escrituras mediante BEGIN IMMEDIATE para los locks.
