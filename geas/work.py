@@ -520,11 +520,37 @@ def cmd_rollback(storage: Storage, args: list[str]) -> int:
 
     repo_path = args[1] if len(args) > 1 else "."
     g = LocalGitProvider(repo_path)
+
+    # §11/§30: el rollback se registra como evento de auditoría. Primero
+    # ROLLBACK_REQUESTED; ROLLBACK_COMPLETED solo si realmente ocurrió —
+    # registrar un COMPLETED que falló mentiría el histórico.
+    from geas.models import AuditLog, Event
+
+    storage.create_audit(
+        AuditLog(
+            actor_id="me",
+            action="ROLLBACK_REQUESTED",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"to_commit": ticket.commit_before},
+        )
+    )
+    storage.create_event(
+        Event(
+            event_type="ROLLBACK_REQUESTED",
+            organization_id=ticket.organization_id,
+            actor_id="me",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            metadata={"to_commit": ticket.commit_before},
+        )
+    )
+
     ok = g.rollback(ticket.commit_before)
     print(f"ROLLBACK {'OK' if ok else 'FAILED'} a {ticket.commit_before[:8]}")
-
-    # Registrar en auditoría (§11: el rollback es un evento de auditoría)
-    from geas.models import AuditLog, Event
+    if not ok:
+        # El REQUESTED queda registrado; no se inventa el COMPLETED (§30).
+        return 1
 
     storage.create_audit(
         AuditLog(
@@ -545,7 +571,7 @@ def cmd_rollback(storage: Storage, args: list[str]) -> int:
             metadata={"to_commit": ticket.commit_before},
         )
     )
-    return 0 if ok else 1
+    return 0
 
 
 def cmd_branch(storage: Storage, args: list[str]) -> int:

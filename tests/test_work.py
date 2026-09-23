@@ -416,3 +416,44 @@ class TestWorkDiffRollback:
         # El fichero vuelve al estado de commit_before
         content = (git_repo / "Chat.py").read_text()
         assert content == "class Chat:\n    pass\n"
+
+    def test_rollback_registra_eventos_30(self, storage, git_repo, org, capsys):
+        """§11/§30: éxito → REQUESTED + COMPLETED en eventos y auditoría."""
+        from geas.work import cmd_rollback
+
+        cmd_init(storage, [str(git_repo)])
+        t = Ticket(organization_id=org.id, title="Cambio")
+        storage.create_ticket(t)
+        (git_repo / "Chat.py").write_text(
+            "class Chat:\n    def send(self):\n        pass\n"
+        )
+        cmd_start(storage, [t.id, str(git_repo)])
+        cmd_finish(storage, [t.id, str(git_repo), "trabajo"])
+
+        assert cmd_rollback(storage, [t.id, str(git_repo)]) == 0
+        events = {e.event_type for e in storage.list_events(org.id)}
+        assert "ROLLBACK_REQUESTED" in events
+        assert "ROLLBACK_COMPLETED" in events
+        audits = {a.action for a in storage.list_audit(org.id)}
+        assert "ROLLBACK_REQUESTED" in audits
+        assert "ROLLBACK_COMPLETED" in audits
+
+    def test_rollback_fallido_no_inventa_completed(self, storage, git_repo, org, capsys):
+        """§30: si el rollback falla, queda REQUESTED y NO se registra COMPLETED."""
+        from geas.work import cmd_rollback
+
+        cmd_init(storage, [str(git_repo)])
+        t = Ticket(
+            organization_id=org.id,
+            title="Roto",
+            commit_before="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        storage.create_ticket(t)
+
+        assert cmd_rollback(storage, [t.id, str(git_repo)]) == 1
+        events = {e.event_type for e in storage.list_events(org.id)}
+        assert "ROLLBACK_REQUESTED" in events
+        assert "ROLLBACK_COMPLETED" not in events
+        audits = {a.action for a in storage.list_audit(org.id)}
+        assert "ROLLBACK_REQUESTED" in audits
+        assert "ROLLBACK_COMPLETED" not in audits
