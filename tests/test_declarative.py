@@ -196,3 +196,34 @@ def test_load_estructura_por_nivel_departamento(tmp_path):
     # distingue por departamento (almacenados por id en la DB)
     assert {r.department for r in loaded.repositories} == {"YouTube", "Gmail"}
     assert you_backend.url == "https://github.com/google/youtube"
+
+def test_load_departamento_con_padre_desconocido_falla(tmp_path):
+    _write(tmp_path, "organization.yml", "name: Org\n")
+    _write(tmp_path, "departments/a/department.yml", "name: A\nparent: NoExiste\n")
+    with pytest.raises(ValueError, match="DEPARTMENT_UNKNOWN_PARENT"):
+        load_structure(tmp_path)
+
+
+def test_load_departamento_auto_padre_falla(tmp_path):
+    _write(tmp_path, "organization.yml", "name: Org\n")
+    _write(tmp_path, "departments/a/department.yml", "name: A\nparent: A\n")
+    with pytest.raises(ValueError, match="DEPARTMENT_SELF_PARENT"):
+        load_structure(tmp_path)
+
+
+def test_load_departamento_ciclo_falla(tmp_path):
+    _write(tmp_path, "organization.yml", "name: Org\n")
+    _write(tmp_path, "departments/a/department.yml", "name: A\nparent: B\n")
+    _write(tmp_path, "departments/b/department.yml", "name: B\nparent: A\n")
+    with pytest.raises(ValueError, match="DEPARTMENT_CYCLE"):
+        load_structure(tmp_path)
+
+
+def test_load_jerarquia_valida_carga_con_padre(tmp_path):
+    _write(tmp_path, "organization.yml", "name: Org\n")
+    _write(tmp_path, "departments/a/department.yml", "name: A\nparent: Raiz\n")
+    _write(tmp_path, "departments/raiz/department.yml", "name: Raiz\n")
+    loaded = load_structure(tmp_path)
+    by_name = {d.name: d for d in loaded.departments}
+    assert by_name["A"].parent == "Raiz"
+    assert by_name["Raiz"].parent is None

@@ -255,6 +255,33 @@ def load_structure(root: str | Path) -> DeclarativeStructure:
     if dupes:
         raise ValueError(f"POLICY_DUPLICATE: {', '.join(dupes)}")
     dept_names = {d.name for d in departments}
+    # Jerarquía: el padre debe existir, no ser uno mismo, y no formar
+    # ciclos (§43) — se valida ANTES de tocar la base de datos
+    for dept in departments:
+        if not dept.parent:
+            continue
+        if dept.parent not in dept_names:
+            raise ValueError(
+                "DEPARTMENT_UNKNOWN_PARENT: "
+                f"'{dept.name}' apunta a '{dept.parent}' que no existe"
+            )
+        if dept.parent == dept.name:
+            raise ValueError(
+                f"DEPARTMENT_SELF_PARENT: '{dept.name}' no puede ser su propio padre"
+            )
+        seen = {dept.name}
+        current = dept.parent
+        while current:
+            if current in seen:
+                raise ValueError(
+                    "DEPARTMENT_CYCLE: la jerarquía de departamentos "
+                    f"pasa por '{current}' y vuelve a sí misma"
+                )
+            seen.add(current)
+            parent = next((d for d in departments if d.name == current), None)
+            if parent is None:
+                break  # ya validado arriba (UNKNOWN_PARENT)
+            current = parent.parent
     for policy in policies:
         if policy.department and policy.department not in dept_names:
             raise ValueError(
