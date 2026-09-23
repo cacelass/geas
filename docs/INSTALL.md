@@ -13,9 +13,12 @@ dependencias de runtime). **Se instala desde el repositorio, no desde
 PyPI**: el nombre `geas` en PyPI pertenece a otro proyecto no relacionado,
 así que `pipx install geas` descargaría ese paquete, no este.
 
+Repo canónico: **`https://github.com/cacelass/geas`**
+
 ```bash
 # Desde el repo GEAS (fuente canónica)
-cd <ruta-al-repo-geas>
+git clone https://github.com/cacelass/geas
+cd geas
 
 # Con pipx (recomendado — aislado, comando global)
 pipx install .
@@ -132,9 +135,10 @@ Integra GEAS en este repositorio. GEAS coordina el trabajo de humanos y
 agentes de IA: tickets, dependencias, recursos, locks, permisos.
 
 Pasos:
-1. Si `geas` no está instalado, instálalo desde el repo: `pipx install .`
-   (o `uv tool install .`; nunca `pipx install geas` — el nombre en PyPI
-   pertenece a otro proyecto no relacionado).
+1. Si `geas` no está instalado, clona el repo canónico y lo instalas desde
+   ahí: `git clone https://github.com/cacelass/geas`, `cd geas`,
+   `pipx install .` (o `uv tool install .`; nunca `pipx install geas` —
+   el nombre en PyPI pertenece a otro proyecto no relacionado).
 2. Crea la organización con el perfil correcto:
    - un solo agente/persona en local  → `geas init "Mi Org"`            (Individual)
    - equipo compartido                → `geas init "Mi Org" --profile team`

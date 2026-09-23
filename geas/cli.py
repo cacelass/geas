@@ -1016,11 +1016,6 @@ def _cmd_ticket(storage: Storage, args: list[str]) -> int:
                 # §34 contrato previo: `ticket list <org>` sin filtro → sin badges
                 print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}")
                 continue
-            if availability is None:
-                # §34 previo: `ticket list <org>` sin flags → sin badges.
-                # El contrato existente pinta solo id/status/título.
-                print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}")
-                continue
             if locks:
                 lock = locks[0]
                 actor = storage.get_user(lock.actor_id)
