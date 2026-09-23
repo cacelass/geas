@@ -238,3 +238,76 @@ def test_run_ticket_raises_when_missing(storage, org, repo, repo_path):
     config = RunnerConfig(command=[sys.executable, "-c", "pass"])
     with pytest.raises(ValueError):
         runner.run_ticket("NO-EXISTE", config, repo_path)
+
+
+def test_run_ticket_with_llm_provider_writes_artifact_and_usage(
+    storage, org, repo, repo_path, monkeypatch
+):
+    """Multi-provider (§43): en vez de comando local, llama al LLM y registra
+    los tokens/coste reales que vuelven en la respuesta."""
+    from tests.fake_llm_server import FakeLLMServer  # noqa: PLC0415 -- helper de test
+
+    ticket = _ticket(storage, org, repo)
+    runner = ExecutionRunner(storage, harness=LocalHarness(".geas/worktrees"))
+
+    monkeypatch.setenv("GEAS_OPENAI_API_KEY", "test-key")
+    with FakeLLMServer() as server:
+        config = RunnerConfig(
+            command=[],
+            worktrees_root=".geas/worktrees",
+            actor_id="agent-01",
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            llm_api_base=server.base_url,
+        )
+        summary = runner.run_ticket(ticket.id, config, repo_path)
+
+    assert summary.result == "success"
+    assert summary.returncode == 0
+    assert "Respuesta OpenAI" in summary.stdout
+
+    # El artefacto quedó en el worktree antes de la limpieza...
+    # (con keep_worktree podemos comprobarlo)
+    assert not Path(summary.worktree).exists()  # limpiado
+
+    # La Execution registró los tokens/coste reales de la respuesta
+    exe = storage.get_executions(ticket.id)[0]
+    assert exe.provider == "openai"
+    assert exe.model == "gpt-4o-mini"
+    assert exe.tokens_input == 12
+    assert exe.tokens_output == 7
+    assert exe.cost > 0
+    assert exe.finished_at
+
+
+def test_run_ticket_with_llm_provider_keeps_artifact(
+    storage, org, repo, repo_path, monkeypatch
+):
+    """Con --keep, el artefacto del LLM queda en el worktree conservado."""
+    from tests.fake_llm_server import FakeLLMServer  # noqa: PLC0415 -- helper de test
+
+    ticket = _ticket(storage, org, repo)
+    runner = ExecutionRunner(storage, harness=LocalHarness(".geas/worktrees"))
+
+    monkeypatch.setenv("GEAS_ANTHROPIC_API_KEY", "test-key")
+    with FakeLLMServer() as server:
+        config = RunnerConfig(
+            command=[],
+            worktrees_root=".geas/worktrees",
+            actor_id="agent-01",
+            llm_provider="anthropic",
+            llm_model="claude-3-5-sonnet",
+            llm_api_base=server.base_url,
+            keep_worktree=True,
+        )
+        summary = runner.run_ticket(ticket.id, config, repo_path)
+
+    assert summary.kept_worktree
+    artifact = Path(summary.worktree) / "GEAS_ANSWER.md"
+    assert artifact.exists()
+    assert "Respuesta Anthropic" in artifact.read_text()
+
+    # limpieza manual del worktree de prueba
+    import shutil  # noqa: PLC0415
+
+    shutil.rmtree(summary.worktree, ignore_errors=True)

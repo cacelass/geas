@@ -93,7 +93,26 @@ Verificación rápida:
 ./status.sh --json   # salida estructurada para agentes
 ```
 
-### 3.1 Simulación multi-persona (prueba de concurrencia)
+### 3.1 Instalar una instancia desde el template Copier (MVP 3)
+
+GEAS se distribuye también como template Copier: `copier copy` genera una
+instancia completa (código + `config/geas.yml` renderizado con las
+respuestas de la empresa).
+
+```bash
+pipx install copier
+copier copy https://github.com/cacelass/geas mi-org --defaults --trust
+cd mi-org
+uv venv && uv pip install -e ".[dev]"
+uv run python -m geas init "Mi Empresa"
+```
+
+La pregunta `¿incluir agentes de IA?` (ai_agents) decide si la instancia
+trae el perfil agent y sus helpers; `authentication` fija el modo de login
+(none o auth) en el `config/geas.yml` generado. Ver `copier.yml` para las
+preguntas completas (§35).
+
+### 3.2 Simulación multi-persona (prueba de concurrencia)
 
 `examples/simulacion/` simula dos personas (humana + agente) editando el
 MISMO documento a la vez y demuestra que la BD se lo impide (lock de

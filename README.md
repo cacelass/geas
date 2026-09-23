@@ -237,6 +237,21 @@ geas mcp list_repositories
 geas mcp get_permissions           # catálogo §7
 ```
 
+### Ejecución de agentes (harness + multi-provider)
+
+```bash
+# Ejecutar un ticket en un worktree aislado con un comando local
+geas harness run <ticket_id> --repo <path> --cmd "<comando del agente>"
+
+# Multi-provider (§43): en vez de un comando local, llamar a un LLM real
+# (OpenAI / Anthropic vía HTTP, stdlib pura — sin SDK)
+GEAS_OPENAI_API_KEY=sk-...  geas harness run <ticket_id> --llm openai --model gpt-4o
+GEAS_ANTHROPIC_API_KEY=sk-... geas harness run <ticket_id> --llm anthropic --model claude-3-5-sonnet
+
+# La respuesta del LLM queda en el worktree (GEAS_ANSWER.md) y los tokens
+# y el coste reales se registran en la Execution (§28 model traceability)
+```
+
 ### Panel web (solo lectura)
 
 ```bash
@@ -286,10 +301,3 @@ uv venv && uv pip install -e ".[dev]"
 uv run pytest tests/ -q
 ```
 
-## Roadmap
-
-- **MVP 1** — ✅ hecho: CLI · SQLite · Tickets · Dependencias · Recursos · Locks · Git (commit_before/after)
-- **MVP 2** — ✅ hecho (driver PostgreSQL pendiente, §42): Users/Agents · Roles · Permisos · Web UI · Audit · Event Log · Git/GitHub
-- **MVP 3** — 🟡 parcial: Agent Harness y Runner con worktrees (implementados) · Multi-provider y Copier (pendientes)
-- **Perfiles (§43)** — ✅ implementado: Individual/Team/Enterprise, estructura declarativa + `geas sync` + MCP de contexto + gates de perfil en la CLI
-- **Enterprise (pendiente)**: SSO/OIDC · Advanced RBAC · enforcement de Policies · Observability · driver PostgreSQL (§42)

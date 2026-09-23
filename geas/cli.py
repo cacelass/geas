@@ -810,6 +810,10 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
                                     [--tests "<comando>..."]
                                     [--agent <agent_id>] [--actor <id>]
                                     [--keep] [--timeout <s>]
+        # Multi-provider (§43): en vez de un comando local, llama a un LLM real
+        geas harness run <ticket_id> --llm <openai|anthropic>
+                                    [--model <modelo>] [--prompt "<instrucción>"]
+                                    [--max-tokens <n>] [--tests "<comando>..."]
     """
     if not args or args[0] != "run" or len(args) < 2:
         print(
@@ -826,6 +830,10 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
     actor_id = "runner"
     keep = False
     timeout: int | None = None
+    llm_provider: str | None = None
+    llm_model = ""
+    llm_prompt = ""
+    llm_max_tokens = 2048
 
     def _split(value: str) -> list[str]:
         import shlex
@@ -852,6 +860,18 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
         elif arg == "--timeout" and pos + 1 < len(args):
             timeout = int(args[pos + 1])
             pos += 2
+        elif arg == "--llm" and pos + 1 < len(args):
+            llm_provider = args[pos + 1]
+            pos += 2
+        elif arg == "--model" and pos + 1 < len(args):
+            llm_model = args[pos + 1]
+            pos += 2
+        elif arg == "--prompt" and pos + 1 < len(args):
+            llm_prompt = args[pos + 1]
+            pos += 2
+        elif arg == "--max-tokens" and pos + 1 < len(args):
+            llm_max_tokens = int(args[pos + 1])
+            pos += 2
         elif arg == "--keep":
             keep = True
             pos += 1
@@ -859,19 +879,27 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
             print(f"Argumento desconocido: {arg}", file=sys.stderr)
             return 1
 
-    if not command:
-        print('Falta --cmd "<comando del agente>"', file=sys.stderr)
+    if not command and not llm_provider:
+        print(
+            'Falta --cmd "<comando del agente>" o --llm <openai|anthropic>',
+            file=sys.stderr,
+        )
         return 1
 
+    from geas.llm import LLMError
     from geas.runner import ExecutionRunner, RunnerConfig
 
     agent = storage.get_agent(agent_id) if agent_id else None
     config = RunnerConfig(
-        command=command,
+        command=command or [],
         test_command=test_command,
         keep_worktree=keep,
         timeout=timeout,
         actor_id=actor_id,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_prompt=llm_prompt,
+        llm_max_tokens=llm_max_tokens,
     )
     runner = ExecutionRunner(storage)
     try:
@@ -879,11 +907,16 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    except LLMError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     print(f"execution: {summary.execution_id}")
     print(f"ticket:    {summary.ticket_id}")
     print(f"branch:    {summary.branch}")
     print(f"result:    {summary.result} (rc={summary.returncode})")
+    if llm_provider:
+        print("provider:  " + llm_provider)
     if summary.test_status:
         print(f"tests:     {summary.test_status}")
     if summary.stdout.strip():

@@ -932,6 +932,27 @@ class Storage:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def update_execution_usage(
+        self,
+        execution_id: str,
+        tokens_input: int = 0,
+        tokens_output: int = 0,
+        cost: float = 0.0,
+    ) -> bool:
+        """Registra las métricas reales del modelo tras la ejecución (§28).
+
+        El runner crea la Execution antes de llamar al proveedor; los tokens
+        y el coste reales solo se conocen en la respuesta de la API, así que
+        se actualizan aquí al terminar (multi-provider §43).
+        """
+        cur = self.conn.execute(
+            "UPDATE executions SET tokens_input = ?, tokens_output = ?, cost = ? "
+            "WHERE id = ?",
+            (tokens_input, tokens_output, cost, execution_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     # ─── TestResults ────────────────────────────────────────────────────
 
     def create_test_result(self, tr: TestResult) -> TestResult:

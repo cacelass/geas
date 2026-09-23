@@ -6,9 +6,9 @@ git_provider: "{{ git_provider }}"
 deployment_profile: "{{ deployment_profile }}"
 database: "{{ database }}"
 
-web_ui: "{{ web_ui }}"
-mcp_enabled: "{{ mcp_enabled }}"
-ai_agents: "{{ ai_agents }}"
-departments: "{{ departments }}"
+web_ui: {{ web_ui|lower }}
+mcp_enabled: {{ mcp_enabled|lower }}
+ai_agents: {{ ai_agents|lower }}
+departments: {{ departments|lower }}
 authentication: "{{ authentication }}"
 harness: "{{ harness }}"

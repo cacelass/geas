@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from geas.harness import LocalHarness, WorktreeEnvironment
+from geas.harness import LocalHarness, ProcessResult, WorktreeEnvironment
+from geas.llm import get_client
 from geas.models import Agent, Event, Execution, TestResult, TicketStatus
 from geas.storage import Storage
 
@@ -48,6 +49,16 @@ class RunnerConfig:
     tokens_input: int = 0
     tokens_output: int = 0
     cost: float = 0.0
+    # Modo multi-provider (§43): si llm_provider está, el comando local se
+    # sustituye por una llamada real al LLM y la respuesta se escribe en el
+    # worktree (llm_output_file). Los tokens/coste reales vuelven en la
+    # respuesta y se registran en la Execution (update_execution_usage).
+    llm_provider: str | None = None
+    llm_model: str = ""
+    llm_prompt: str = ""
+    llm_max_tokens: int = 2048
+    llm_output_file: str = "GEAS_ANSWER.md"
+    llm_api_base: str | None = None
 
 
 @dataclass
@@ -111,12 +122,23 @@ class ExecutionRunner:
 
         branch = ticket.branch or f"geas/{ticket.id}"
 
+        # Multi-provider (§43): la Execution registra el proveedor REAL que
+        # ejecuta el ticket — el del agente, o el LLM del config si el runner
+        # está en modo LLM (que sustituye al comando local).
         execution = Execution(
             ticket_id=ticket.id,
             actor_id=config.actor_id,
             harness_id="local",
-            provider=agent.provider if agent else "local",
-            model=agent.model if agent else "cli",
+            provider=(
+                config.llm_provider
+                if config.llm_provider
+                else (agent.provider if agent else "local")
+            ),
+            model=(
+                config.llm_model
+                if config.llm_provider
+                else (agent.model if agent else "cli")
+            ),
             model_version=agent.model_version if agent else "",
             tokens_input=config.tokens_input,
             tokens_output=config.tokens_output,
@@ -139,7 +161,12 @@ class ExecutionRunner:
         env = self.harness.prepare(ticket.id, repository, branch)
         test_status = None
         try:
-            process = self.harness.run(env, config.command, timeout=config.timeout)
+            if config.llm_provider:
+                process = self._run_llm(
+                    ticket, env, config, agent, execution.id
+                )
+            else:
+                process = self.harness.run(env, config.command, timeout=config.timeout)
             if config.test_command:
                 test_status = self._run_tests(ticket, env, config)
         except Exception:
@@ -183,6 +210,79 @@ class ExecutionRunner:
         )
 
     # ─── Pasos internos ──────────────────────────────────────────────────
+
+    def _run_llm(
+        self,
+        ticket,
+        env: WorktreeEnvironment,
+        config: RunnerConfig,
+        agent: Agent | None,
+        execution_id: str,
+    ) -> ProcessResult:
+        """Sustituye el comando local por una llamada real al LLM (§43).
+
+        - construye el prompt a partir del ticket (o usa config.llm_prompt)
+        - llama al proveedor (openai/anthropic) vía geas.llm
+        - escribe la respuesta en el worktree (llm_output_file) para que
+          quede como artefacto del ticket
+        - registra los tokens/coste reales en la Execution (§28)
+        Devuelve un ProcessResult sintético para reutilizar el resto del
+        ciclo (tests, eventos, RunSummary).
+        """
+        system = (
+            "Eres un agente de ingeniería trabajando en un ticket de GEAS. "
+            "Responde con un plan de implementación concreto y, si procede, "
+            "con el código o el diff necesario. Sé conciso y ejecutable."
+        )
+        if config.llm_prompt:
+            user = config.llm_prompt
+        else:
+            deps = ", ".join(ticket.dependencies) or "ninguna"
+            resources = ", ".join(ticket.resources) or "ninguno"
+            user = (
+                f"Ticket: {ticket.id}\n"
+                f"Título: {ticket.title}\n"
+                f"Descripción: {ticket.description or '(sin descripción)'}\n"
+                f"Prioridad: {ticket.priority}\n"
+                f"Dependencias: {deps}\n"
+                f"Recursos: {resources}\n"
+                f"Branch: {env.branch}\n"
+                f"Actor: {config.actor_id}\n\n"
+                "Implementa este ticket. Deja el resultado en el repositorio "
+                "y explica qué has cambiado."
+            )
+
+        started_at = datetime.now(UTC).isoformat()
+        client = get_client(
+            config.llm_provider or "",
+            api_base=config.llm_api_base,
+            model=config.llm_model,
+        )
+        result = client.complete(
+            system, user, model=config.llm_model or None, max_tokens=config.llm_max_tokens
+        )
+        finished_at = datetime.now(UTC).isoformat()
+
+        # Artefacto: la respuesta del LLM queda en el worktree del ticket
+        output = Path(env.worktree) / config.llm_output_file
+        output.write_text(
+            f"# {config.llm_provider} — {result.model}\n\n{result.text}\n",
+            encoding="utf-8",
+        )
+
+        self.storage.update_execution_usage(
+            execution_id,
+            tokens_input=result.tokens_input,
+            tokens_output=result.tokens_output,
+            cost=result.cost,
+        )
+        return ProcessResult(
+            returncode=0 if result.text else 1,
+            stdout=result.text,
+            stderr="",
+            started_at=started_at,
+            finished_at=finished_at,
+        )
 
     def _run_tests(self, ticket, env: WorktreeEnvironment, config: RunnerConfig) -> str:
         """Ejecuta el comando de tests en el worktree del ticket (§20)."""
