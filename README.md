@@ -88,6 +88,50 @@ no compiten por programación, compiten por la guardia de la BD. Los pipelines
 hacen consultas ligeras (`geas sync .`); el claim vive siempre en GEAS.
 El detalle está en [`docs/INSTALL.md`](docs/INSTALL.md) §5.
 
+## Ejemplo de uso: una hackatón con 4 personas (y 4 LLMs)
+
+Cuatro personas comparten el MISMO repositorio durante una hackatón. Cada
+una trabaja con su propio LLM. Sin coordinación, dos agentes acaban tocando
+`chat.py` a la vez: uno commitea la v2, el otro sigue en la v1, sincroniza…
+y peta. No es un problema de git: es un problema de *quién toca qué y
+cuándo*.
+
+Con GEAS el flujo es:
+
+```bash
+# 1. Montar el proyecto
+geas init "Hackatón 2026"              # org + roles por defecto
+cd mi-repo && geas work init .         # registrar el repo de trabajo
+
+# 2. Registrar personas y LLMs
+geas user create <org_id> "Ana" ana@example.com
+geas agent create <org_id> "Codex" openai gpt-5
+geas agent create <org_id> "Claude" anthropic claude-4
+
+# 3. Crear tickets (cada uno declara sus recursos: archivos, APIs, BDs)
+geas ticket create <org_id> "Rediseñar chat.py" "UI + streaming"
+geas ticket create <org_id> "Refactor de auth"   "sessiones + tokens"
+
+# 4. ANTES de tocar: preguntar qué se puede coger
+geas work tasks <codex_id>
+#   → tickets FREE, con recursos desbloqueados y dependencias resueltas.
+#     Si chat.py ya está bloqueado por otro ticket, ese ticket no sale:
+#     te devuelve los libres que NO tocan ese archivo.
+
+# 5. Empezar: `work start` valida recursos y bloquea los del ticket en la BD
+geas work start <ticket_id>            # claim atómico + locks adquiridos
+# ... trabajas ...
+geas work finish <ticket_id>           # commit registrado + locks liberados
+```
+
+La base de datos registra **qué es cada ticket, qué archivos bloquea, quién
+lo hace, qué LLM lo ejecutó y los commits antes/después** — si algo sale
+mal, `geas work rollback` revierte con el versionado de git. El claim es
+atómico y los tickets se ordenan por **prioridad** (los que bloquean a más
+tickets se atienden antes, §15). Todo el flujo es robusto ante concurrencia
+también desde CI/CD: el runner hace consultas ligeras (`geas sync .`) y el
+claim vive en la BD, no en la programación del pipeline.
+
 ## Perfiles de despliegue (§43)
 
 Un único GEAS modular: el perfil elige qué componentes se activan.
@@ -200,7 +244,7 @@ geas serve                       # http://127.0.0.1:8787/ → dashboard
 # http://127.0.0.1:8787/ticket/<id> → detalle con trazabilidad §29
 ```
 
-## Proveedores Git (§18/§42)
+## Proveedores Git
 
 La mitad local (fetch/pull/status/branch/commit/push/diff/rollback) la
 resuelve el CLI de git. La mitad remota (PR, merge, commits) se delega
@@ -223,7 +267,7 @@ PyPI: el nombre `geas` en PyPI pertenece a otro proyecto no relacionado
 (⚠️ `pipx install geas` descargaría ese paquete, no este).
 
 ```bash
-git clone <repo-geas> && cd geas
+git clone https://github.com/cacelass/geas && cd geas
 
 # comando global aislado (cualquiera de las dos)
 uv tool install .               # o: pipx install .
