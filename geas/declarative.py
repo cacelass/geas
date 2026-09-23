@@ -357,12 +357,23 @@ def build_structure(
 def render_ci_workflow() -> str:
     """Workflow CI de ejemplo — `geas sync` es ligero y seguro para CI (§43).
 
-    GEAS sigue siendo la fuente de verdad de la coordinación; CI solo
-    sincroniza la estructura declarativa contra la base de datos."""
+    Patrón de concurrencia (§43/§5.2): cada agente trabaja en su propia
+    rama y cada rama/PR tiene su propio pipeline. Los pipelines corren en
+    paralelo y solo consultan a GEAS (estado, estructura); el claim de un
+    ticket es atómico en la BD de GEAS (`UPDATE ... WHERE status='FREE'`),
+    nunca una decisión del CI. A y B no compiten salvo que reclamen el
+    mismo ticket/recurso — y entonces la BD decide, no el pipeline."""
     return """\
 name: geas-sync
 on:
   push:
+    paths:
+      - "organization.yml"
+      - "departments/**"
+      - "repositories/**"
+      - "roles/**"
+      - "policies/**"
+  pull_request:
     paths:
       - "organization.yml"
       - "departments/**"
@@ -376,6 +387,8 @@ jobs:
       - uses: actions/checkout@v4
       # Instala geas en CI (pip install geas o el canal de tu org) y
       # apunta GEAS_DB a la instancia Team/Enterprise (§43).
+      # Esto es una consulta ligera de estructura; el estado operativo
+      # (tickets/locks) vive en la BD de GEAS, nunca en el pipeline.
       - run: geas sync .
 """
 

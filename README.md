@@ -81,17 +81,23 @@ ocurrieron.
 
 ## Instalación
 
-```bash
-# Como template Copier (§35) — cada empresa obtiene su propia instancia:
-copier copy https://github.com/tu-org/geas-template company-geas
-cd company-geas
-uv venv && uv pip install -e ".[dev]"
-uv run python -m geas init "{{ organization }}"
+GEAS es un paquete Python con entry point `geas` (stdlib pura, cero
+dependencias de runtime):
 
-# O como proyecto normal:
-git clone <repo>
+```bash
+pipx install geas          # o: uv tool install geas
+```
+
+O desde el repo en desarrollo:
+
+```bash
+git clone <repo> && cd geas
 uv venv && uv pip install -e ".[dev]"
 ```
+
+La **guía completa** — perfiles, inclusión en un repositorio, prompt de
+instalación para tu asistente y cómo encaja la concurrencia — está en
+[`docs/INSTALL.md`](docs/INSTALL.md).
 
 ## Uso
 
@@ -183,6 +189,12 @@ Un recurso (archivo, dirección, API...) puede estar bloqueado por un ticket:
 - **Agent B** → YT-105 → `Chat.py` → **RESOURCE_UNAVAILABLE** (`locked_by: YT-104`)
 
 Al terminar A (commit registrado + lock liberado), B puede continuar.
+
+El claim de un ticket es **atómico** (`UPDATE ... WHERE status='FREE'`):
+dos pipelines que reclaman el mismo ticket no compiten por programación,
+compiten por la guardia de la BD. Consultas ligeras en CI/CD, claim en
+GEAS. El patrón completo — BD local vs `.geas.yml`, CI/CD por rama/PR,
+onboarding de agentes — está en [`docs/INSTALL.md`](docs/INSTALL.md) §5.
 
 ## Tests
 
