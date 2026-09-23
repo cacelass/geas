@@ -14,7 +14,7 @@ Su función es responder:
 ```
 Organization
   └── Departments (jerárquicos)
-       └── Users / Agents · Roles + Permissions (RBAC)
+       └── Users / Agents · Roles + Permissions (RBAC) · Policies
             └── Tickets
                  ├── Dependencies (entre tickets)
                  ├── Resources (archivos, APIs, DBs)
@@ -26,10 +26,58 @@ Organization
 
 ## Estados del ticket
 
+El claim de trabajo es **atómico** (`UPDATE ... WHERE status='FREE'`,
+§39) — dos agentes concurrentes no pueden reclamar el mismo ticket:
+
 ```
-FREE → CLAIMED → IN_PROGRESS → BLOCKED → REVIEW → DONE
-                              ↘ CANCELLED
+FREE → IN_PROGRESS → BLOCKED → REVIEW → DONE     (claim atómico §39)
+FREE → CLAIMED                                   (reserva ligera assign_ticket)
+                                      ↘ CANCELLED
 ```
+
+## Perfiles de despliegue (§43)
+
+Un único Geas modular: el perfil elige qué componentes se activan.
+
+| Perfil | Alias | Componentes |
+|--------|-------|-------------|
+| **Individual** | `1` / `MINIMAL` | Organización · Git integration · SQLite |
+| **Team** | `2` | Individual + Agent coordination · Roles · RBAC · Locks (conflict-free) · Web UI · MCP |
+| **Enterprise** | `3` | Team + Departments (jerárquicos) · Policies · SSO/OIDC · Observability · Governance |
+
+El perfil se guarda en `organizations.profile`; `geas sync` sincroniza solo
+las secciones declarativas que el perfil soporta — una estructura Enterprise
+ante un perfil Individual se rechaza con error claro antes de tocar la base
+de datos. `backend_for(profile)` declara el backend: TEAM/ENTERPRISE piden
+PostgreSQL (§42); el driver psycopg es deuda de infra anotada y esta build
+sigue sobre SQLite con fail-fast (nunca cae en silencio).
+
+## Estructura declarativa Enterprise (§43)
+
+El árbol versionado en Git es el estado **deseado**; la base de datos de
+Geas es la única fuente de verdad del estado **operativo** (tickets, locks,
+ejecuciones — nunca se escriben en el árbol):
+
+```
+organization.yml                    nombre, descripción, perfil
+departments/<slug>/department.yml   departamento (parent opcional)
+departments/<slug>/repositories/    repos de un departamento
+repositories/<slug>.yml             repos de organización
+roles/<slug>.yml                    rol declarativo (§7)
+policies/<slug>.yml                 política declarativa
+.github/workflows/geas-sync.yml     CI: geas sync .
+```
+
+```bash
+geas enterprise init --org "Google" --departments YouTube,Gmail \
+  --repos "YouTube:backend,frontend;core-lib"   # genera el árbol
+geas init "Google" --profile enterprise         # org con el perfil
+geas sync .                                     # aplica el árbol a la BD (idempotente)
+```
+
+`geas sync` es idempotente: crea lo que falta, converge description/perfil/
+permisos y deja intacto lo que ya está. Un re-sync no cuenta cambios que ya
+ocurrieron.
 
 ## Instalación
 
@@ -53,8 +101,10 @@ uv venv
 uv pip install -e ".[dev]"
 
 # CLI
-geas init "Mi Org"                # crear organización + roles por defecto
+geas init "Mi Org"                # crear organización + roles por defecto (perfil: individual)
+geas init "Mi Org" --profile team # perfil Team (o 2); --individual/--team/--enterprise/1/2/3
 geas org list                     # listar organizaciones
+geas org show <org_id>            # perfil, componentes y conteos (§43)
 geas dept list <org_id>           # listar departamentos
 geas dept create <org_id> "Backend"
 geas user create <org_id> "Ana" ana@example.com
@@ -97,6 +147,11 @@ geas work pr create <ticket_id> [path]       # push + PR (gh/glab) + PR_CREATED
 geas mcp list
 geas mcp create_ticket --title "Implementar X"
 geas mcp get_available_tasks
+geas mcp get_organization          # perfil, componentes, backend (§43)
+geas mcp list_departments          # estructura declarada
+geas mcp get_department --name YouTube
+geas mcp list_repositories
+geas mcp get_permissions           # catálogo §7
 
 # Panel web de estado (§42, solo lectura)
 geas serve                       # http://127.0.0.1:8787/ → dashboard
@@ -140,4 +195,5 @@ uv run pytest tests/ -q
 - **MVP 1** (actual): CLI · SQLite · Tickets · Dependencias · Recursos · Locks · Git (commit_before/after)
 - **MVP 2**: PostgreSQL · Users/Agents · Roles · Permisos · Web UI · Audit · Event Log · GitHub/GitLab
 - **MVP 3**: Agent Harness · Agent Runner · Multi-provider · Model traceability · Worktrees · Copier
-- **Enterprise**: SSO/OIDC · Advanced RBAC · Observability · Multi-organization
+- **Perfiles (§43)**: Individual/Team/Enterprise — estructura declarativa + `geas sync` + MCP de contexto (implementado)
+- **Enterprise**: SSO/OIDC · Advanced RBAC · enforcement de Policies · Observability · driver PostgreSQL (§42)
