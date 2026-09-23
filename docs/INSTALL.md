@@ -93,6 +93,16 @@ Verificación rápida:
 ./status.sh --json   # salida estructurada para agentes
 ```
 
+### 3.1 Simulación multi-persona (prueba de concurrencia)
+
+`examples/simulacion/` simula dos personas (humana + agente) editando el
+MISMO documento a la vez y demuestra que la BD se lo impide (lock de
+recurso atómico) y que el reintento tras terminar sí funciona:
+
+```bash
+python3 examples/simulacion/demo_concurrencia.py
+```
+
 ## 4. Prompt de instalación para tu asistente
 
 Pégalo tal cual a Claude Code, opencode o cualquier asistente con acceso
