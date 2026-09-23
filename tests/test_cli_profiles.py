@@ -12,7 +12,7 @@ import pytest
 
 from geas.cli import _cmd_enterprise, _cmd_init, _cmd_org, _cmd_sync
 from geas.declarative import build_structure, render_structure
-from geas.models import DEFAULT_ROLES
+from geas.models import DEFAULT_ROLES, Organization
 from geas.storage import Storage
 
 
@@ -284,3 +284,66 @@ def test_sync_rechaza_secciones_no_soportadas_por_perfil(tmp_path, storage):
     _write_tree(tmp_path, struct)
     assert _cmd_sync(storage, [str(tmp_path)]) == 1
     assert storage.get_organization_by_name("OrgPequena") is None
+
+
+def test_dept_create_rechazado_en_individual_y_team(tmp_path, storage, capsys):
+    """§43 punto 10: departamentos son Enterprise — la CLI imperativa lo hace cumplir."""
+    from geas.cli import _cmd_dept
+
+    org = Organization(name="Solo", profile="individual")
+    storage.create_organization(org)
+    assert _cmd_dept(storage, ["create", org.id, "D"]) == 1
+    err = capsys.readouterr().err
+    assert "PERFIL_NO_SOPORTA" in err and "departamentos" in err
+    assert storage.list_departments(org.id) == []
+
+    team = Organization(name="Equipo", profile="team")
+    storage.create_organization(team)
+    assert _cmd_dept(storage, ["create", team.id, "D"]) == 1
+    assert "PERFIL_NO_SOPORTA" in capsys.readouterr().err
+    assert storage.list_departments(team.id) == []
+
+
+def test_dept_create_permite_enterprise(tmp_path, storage, capsys):
+    from geas.cli import _cmd_dept
+
+    org = Organization(name="Corp", profile="enterprise")
+    storage.create_organization(org)
+    assert _cmd_dept(storage, ["create", org.id, "YouTube"]) == 0
+    assert {d.name for d in storage.list_departments(org.id)} == {"YouTube"}
+
+
+def test_role_create_rechazado_en_individual(tmp_path, storage, capsys):
+    """§43 punto 10: RBAC (roles/permisos) es Team/Enterprise."""
+    from geas.cli import _cmd_role
+
+    org = Organization(name="Solo", profile="individual")
+    storage.create_organization(org)
+    assert _cmd_role(storage, ["create", org.id, "dev", "ticket:read"]) == 1
+    err = capsys.readouterr().err
+    assert "PERFIL_NO_SOPORTA" in err and "roles" in err
+    assert storage.list_roles(org.id) == []
+
+
+def test_user_agent_create_rechazado_en_individual(tmp_path, storage, capsys):
+    """§43 punto 10: usuarios/agentes son Team/Enterprise."""
+    from geas.cli import _cmd_agent, _cmd_user
+
+    org = Organization(name="Solo", profile="individual")
+    storage.create_organization(org)
+    assert _cmd_user(storage, ["create", org.id, "Ana"]) == 1
+    assert "PERFIL_NO_SOPORTA" in capsys.readouterr().err
+    assert _cmd_agent(storage, ["create", org.id, "bot", "anthropic", "claude"]) == 1
+    assert "PERFIL_NO_SOPORTA" in capsys.readouterr().err
+    assert storage.list_users(org.id) == []
+    assert storage.list_agents(org.id) == []
+
+
+def test_repo_create_permite_individual(tmp_path, storage, capsys):
+    """§43: repositorios son núcleo — Individual los soporta (Git integration)."""
+    from geas.cli import _cmd_repo
+
+    org = Organization(name="Solo", profile="individual")
+    storage.create_organization(org)
+    assert _cmd_repo(storage, ["create", org.id, "app"]) == 0
+    assert {r.name for r in storage.list_repositories(org.id)} == {"app"}

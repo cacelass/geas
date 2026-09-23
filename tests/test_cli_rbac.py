@@ -23,7 +23,7 @@ def storage(tmp_path) -> Storage:
 
 @pytest.fixture
 def org(storage: Storage) -> Organization:
-    o = Organization(name="RBAC Test", description="permisos")
+    o = Organization(name="RBAC Test", description="permisos", profile="team")
     storage.create_organization(o)
     return o
 

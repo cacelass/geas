@@ -65,6 +65,34 @@ def _lock_active(storage: Storage, resource_id: str, now: str) -> ResourceLock |
     return None
 
 
+def _require_profile(storage: Storage, org_id: str, feature: str, label: str) -> bool:
+    """§43 point 10: gate de perfil en la CLI imperativa.
+
+    `geas sync` valida secciones por perfil ANTES de tocar la BD, pero los
+    comandos directos (dept/role/user/agent create) podían crear
+    componentes Enterprise sobre una organización Individual — el perfil
+    era descriptivo, no se hacía cumplir. Este gate lo cierra: si el
+    perfil de la org no activa la feature, el comando falla claro, nunca
+    crea en silencio.
+    """
+    from geas.profiles import profile_flags
+
+    org = storage.get_organization(org_id)
+    if org is None:
+        print(f"Organización no encontrada: {org_id}", file=sys.stderr)
+        return False
+    flags = profile_flags(org.profile)
+    if not getattr(flags, feature, False):
+        required = "Individual" if feature == "json_sqlite" else "Team/Enterprise"
+        print(
+            f"PERFIL_NO_SOPORTA: '{label}' requiere perfil {required} — "
+            f"la organización '{org.name}' es {org.profile}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -547,6 +575,8 @@ def _cmd_dept(storage: Storage, args: list[str]) -> int:
         if len(args) < 3:
             print("Uso: geas dept create <org_id> <name> [parent_dept_id]")
             return 1
+        if not _require_profile(storage, args[1], "departments", "departamentos"):
+            return 1
         parent = args[3] if len(args) > 3 else None
         d = Department(
             organization_id=args[1], name=args[2], parent_department_id=parent
@@ -590,6 +620,8 @@ def _cmd_role(storage: Storage, args: list[str]) -> int:
         if len(args) < 3:
             print("Uso: geas role create <org_id> <name> [permission...]")
             return 1
+        if not _require_profile(storage, args[1], "rbac", "roles y permisos"):
+            return 1
         requested = args[3:]
         unknown = [p for p in requested if p not in ALL_PERMISSIONS]
         if unknown:
@@ -607,6 +639,8 @@ def _cmd_role(storage: Storage, args: list[str]) -> int:
     if sub == "grant":
         if len(args) < 4:
             print("Uso: geas role grant <org_id> <role_id> <permission>")
+            return 1
+        if not _require_profile(storage, args[1], "rbac", "roles y permisos"):
             return 1
         if args[3] not in ALL_PERMISSIONS:
             print(f"Permiso desconocido (§7): {args[3]}", file=sys.stderr)
@@ -641,6 +675,8 @@ def _cmd_user(storage: Storage, args: list[str]) -> int:
     if sub == "create":
         if len(args) < 3:
             print("Uso: geas user create <org_id> <name> [email] [dept_id] [role_id]")
+            return 1
+        if not _require_profile(storage, args[1], "ai_agents", "usuarios"):
             return 1
         email = args[3] if len(args) > 3 else ""
         dept_id = args[4] if len(args) > 4 else None
@@ -679,6 +715,8 @@ def _cmd_agent(storage: Storage, args: list[str]) -> int:
     if sub == "create":
         if len(args) < 4:
             print("Uso: geas agent create <org_id> <name> <provider> <model> [dept_id] [role_id]")
+            return 1
+        if not _require_profile(storage, args[1], "ai_agents", "agentes"):
             return 1
         dept_id = args[5] if len(args) > 5 else None
         role_id = args[6] if len(args) > 6 else None
