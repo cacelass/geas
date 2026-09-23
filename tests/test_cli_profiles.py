@@ -248,6 +248,32 @@ def test_sync_converge_permisos_de_rol(tmp_path, storage):
     ]
 
 
+def test_sync_converge_url_branch_y_provider_de_repositorio(tmp_path, storage):
+    _enterprise_tree(tmp_path)
+    assert _cmd_sync(storage, [str(tmp_path)]) == 0
+    org_id = storage.get_organization_by_name("Google").id
+    core = storage.get_repository_by_name(org_id, "core-lib")
+    assert core.url == ""
+
+    # El árbol cambia la url/provider/branch → la DB converge
+    (tmp_path / "repositories/core-lib.yml").write_text(
+        "name: core-lib\nurl: https://github.com/google/core\n"
+        "provider: github\ndefault_branch: develop\n"
+    )
+    assert _cmd_sync(storage, [str(tmp_path)]) == 0
+    core = storage.get_repository_by_name(org_id, "core-lib")
+    assert core.url == "https://github.com/google/core"
+    assert core.provider == "github"
+    assert core.default_branch == "develop"
+
+    # Segundo pase sin cambios → no actualiza
+    assert _cmd_sync(storage, [str(tmp_path)]) == 0
+    assert (
+        storage.get_repository_by_name(org_id, "core-lib").url
+        == "https://github.com/google/core"
+    )
+
+
 def test_sync_rechaza_secciones_no_soportadas_por_perfil(tmp_path, storage):
     struct = build_structure(
         "OrgPequena",

@@ -438,6 +438,25 @@ def _cmd_sync(storage: Storage, args: list[str]) -> int:
             )
             created += 1
             print(f"+ repositorio {repo.name}" + (f" @ {repo.department}" if repo.department else ""))
+        elif (
+            existing.url != repo.url
+            or existing.provider != repo.provider
+            or existing.default_branch != repo.default_branch
+            or existing.visibility.value != repo.visibility
+        ):
+            storage.update_repository_fields(
+                existing.id,
+                url=repo.url,
+                provider=repo.provider,
+                default_branch=repo.default_branch,
+                visibility=repo.visibility,
+            )
+            updated += 1
+            print(
+                f"~ repositorio {repo.name}"
+                + (f" @ {repo.department}" if repo.department else "")
+                + " (url/branch/visibilidad convergidos)"
+            )
         else:
             unchanged += 1
 

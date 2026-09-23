@@ -469,6 +469,39 @@ class Storage:
         ).fetchone()
         return _row_to_repo(row) if row else None
 
+    def update_repository_fields(
+        self,
+        repository_id: str,
+        *,
+        url: str | None = None,
+        provider: str | None = None,
+        default_branch: str | None = None,
+        visibility: str | None = None,
+    ) -> bool:
+        """§43: convergencia de `geas sync` para repositorios declarativos."""
+        sets: list[str] = []
+        values: list[str] = []
+        if url is not None:
+            sets.append("url = ?")
+            values.append(url)
+        if provider is not None:
+            sets.append("provider = ?")
+            values.append(provider)
+        if default_branch is not None:
+            sets.append("default_branch = ?")
+            values.append(default_branch)
+        if visibility is not None:
+            sets.append("visibility = ?")
+            values.append(visibility)
+        if not sets:
+            return False
+        values.append(repository_id)
+        cur = self.conn.execute(
+            f"UPDATE repositories SET {', '.join(sets)} WHERE id = ?", values
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def get_repository_by_name(
         self, org_id: str, name: str, department_id: str | None = None
     ) -> Repository | None:
