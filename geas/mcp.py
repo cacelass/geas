@@ -250,7 +250,12 @@ class GeasMcp:
             )
 
         branch = f"{ticket_id[:8]}-{t.title.replace(' ', '-')[:20]}"
-        self.storage.start_ticket(ticket_id, commit_before=commit_before, branch=branch)
+        self.storage.start_ticket(
+            ticket_id,
+            commit_before=commit_before,
+            branch=branch,
+            actor_id=self.actor_id,
+        )
         self.storage.create_event(
             Event(
                 event_type="TICKET_STARTED",

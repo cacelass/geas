@@ -17,6 +17,7 @@ from geas.models import (
     Event,
     Execution,
     Organization,
+    Policy,
     Repository,
     Resource,
     ResourceLock,
@@ -341,24 +342,34 @@ class TestTickets:
         t = Ticket(organization_id=org.id, title="Estado")
         storage.create_ticket(t)
 
-        # CLAIMED
+        # CLAIMED: reserva ligera vía assign_ticket (no es el claim de
+        # trabajo — los flujos work start / mcp.start_ticket parten de FREE)
         ok = storage.assign_ticket(t.id, "actor-1")
         assert ok is True
         assert storage.get_ticket(t.id).status == TicketStatus.CLAIMED
 
-        # IN_PROGRESS con commit_before
-        ok = storage.start_ticket(t.id, commit_before="a82f91c", branch="YT-104")
+        # El claim real es FREE→IN_PROGRESS en UNA operación atómica (§39)
+        t2 = Ticket(organization_id=org.id, title="Estado 2")
+        storage.create_ticket(t2)
+        ok = storage.start_ticket(
+            t2.id, commit_before="a82f91c", branch="YT-104", actor_id="me"
+        )
         assert ok is True
-        found = storage.get_ticket(t.id)
+        found = storage.get_ticket(t2.id)
         assert found.status == TicketStatus.IN_PROGRESS
+        assert found.assigned_actor_id == "me"
         assert found.commit_before == "a82f91c"
         assert found.branch == "YT-104"
         assert found.started_at is not None
 
+        # §39: el segundo claim del mismo ticket FREE falla (guardia de
+        # estado en el propio UPDATE — TOCTOU-safe)
+        assert storage.start_ticket(t2.id) is False
+
         # DONE con commit_after
-        ok = storage.complete_ticket(t.id, commit_after="b71c4de", result="OK")
+        ok = storage.complete_ticket(t2.id, commit_after="b71c4de", result="OK")
         assert ok is True
-        found = storage.get_ticket(t.id)
+        found = storage.get_ticket(t2.id)
         assert found.status == TicketStatus.DONE
         assert found.commit_after == "b71c4de"
         assert found.completed_at is not None
@@ -501,3 +512,82 @@ def test_storage_backend_postgres_sin_driver_falla_claro():
     es honesto y no se puede confundir con un fallo del perfil."""
     with pytest.raises(NotImplementedError, match="§42"):
         Storage("nunca-se-crea.db", backend="postgres")
+
+
+# §43 — perfil de despliegue, lookups declarativos y políticas
+
+
+def test_organizacion_guardar_perfil_por_defecto_y_leerlo(storage):
+    o = Organization(name="Default")
+    storage.create_organization(o)
+    found = storage.get_organization(o.id)
+    assert found.profile == "individual"
+    assert storage.set_organization_profile(o.id, "enterprise") is True
+    assert storage.get_organization(o.id).profile == "enterprise"
+
+
+def test_get_organization_by_name_idempotente(storage, org):
+    assert storage.get_organization_by_name(org.name).id == org.id
+    assert storage.get_organization_by_name("No existe") is None
+
+
+def test_update_organization_fields_converge_descripcion_y_perfil(storage, org):
+    ok = storage.update_organization_fields(
+        org.id, description="desc nueva", profile="enterprise"
+    )
+    assert ok is True
+    found = storage.get_organization(org.id)
+    assert found.description == "desc nueva"
+    assert found.profile == "enterprise"
+
+
+def test_lookups_declarativos_por_nombre(storage, org, dept, repo):
+    assert storage.get_department_by_name(org.id, dept.name).id == dept.id
+    assert storage.get_department_by_name(org.id, "otro") is None
+    assert (
+        storage.get_department_by_name(org.id, dept.name, parent_id="x-none") is None
+    )
+    assert storage.get_repository_by_name(org.id, repo.name).id == repo.id
+    assert storage.get_repository_by_name(org.id, "no") is None
+
+
+def test_get_role_by_name_y_update_permissions(storage, org):
+    r = Role(organization_id=org.id, name="dev", permissions=["ticket:read"])
+    storage.create_role(r)
+    assert storage.get_role_by_name(org.id, "dev").id == r.id
+    assert storage.get_role_by_name(org.id, "nope") is None
+    assert storage.update_role_permissions(r.id, ["ticket:create", "ticket:read"])
+    assert storage.get_role(r.id).permissions == ["ticket:create", "ticket:read"]
+
+
+def test_policies_crud(storage, org, dept):
+    p = Policy(
+        organization_id=org.id,
+        department_id=dept.id,
+        name="code-owners",
+        description="Cambios de código",
+        permissions=["repository:write", "git:push"],
+    )
+    storage.create_policy(p)
+    assert storage.get_policy(p.id).name == "code-owners"
+    assert storage.get_policy_by_name(org.id, "code-owners", dept.id).id == p.id
+    assert storage.get_policy_by_name(org.id, "code-owners") is None
+    assert storage.get_policy_by_name(org.id, "otra") is None
+
+    assert storage.update_policy_fields(
+        p.id, description="Nuevo", permissions=["repository:read"]
+    )
+    found = storage.get_policy(p.id)
+    assert found.description == "Nuevo"
+    assert found.permissions == ["repository:read"]
+    assert len(storage.list_policies(org.id)) == 1
+
+
+def test_policies_org_sin_departamento(storage, org):
+    p = Policy(organization_id=org.id, name="global", permissions=["ticket:read"])
+    storage.create_policy(p)
+    assert storage.get_policy_by_name(org.id, "global").id == p.id
+    assert (
+        storage.get_policy_by_name(org.id, "global", department_id="d-nonexistent")
+        is None
+    )

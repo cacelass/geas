@@ -66,6 +66,10 @@ class Organization:
     description: str = ""
     created_at: str = field(default_factory=_now)
     active: bool = True
+    # §36/§43: perfil de despliegue — individual | team | enterprise.
+    # Decide qué componentes se activan y qué secciones declarativas
+    # puede sincronizar la organización.
+    profile: str = "individual"
 
 
 # ─── Department ─────────────────────────────────────────────────────────────
@@ -94,6 +98,26 @@ class Role:
 
 
 # ─── User ───────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Policy:
+    """Política declarativa de una organización (§43 Enterprise).
+
+    Vive en la estructura versionada (policies/<name>.yml) y se
+    sincroniza con `geas sync`. El estado operativo —tickets, locks,
+    ejecuciones— nunca se escribe en esos ficheros: la base de datos
+    de GEAS es la única fuente de verdad.
+    """
+
+    id: str = field(default_factory=_uuid)
+    organization_id: str = ""
+    department_id: str | None = None
+    name: str = ""
+    description: str = ""
+    permissions: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=_now)
+    active: bool = True
 
 
 @dataclass
@@ -328,6 +352,11 @@ DEFAULT_PERMISSIONS = [
     "audit:read",
     "execution:read",
 ]
+
+# Catálogo canónico de permisos del §7 — lo que un rol/política puede
+# declarar. `ALL_PERMISSIONS` es el contrato de validación: un permiso
+# fuera de la lista se rechaza con error claro (CLI role create, sync).
+ALL_PERMISSIONS = frozenset(DEFAULT_PERMISSIONS)
 
 # Roles predefinidos
 DEFAULT_ROLES = {

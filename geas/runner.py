@@ -103,9 +103,11 @@ class ExecutionRunner:
                 "no se puede ejecutar"
             )
 
-        # Reclamar tickets libres (igual que work start)
+        # Reclamar tickets libres (igual que work start) — claim atómico §39
         if ticket.status is TicketStatus.FREE:
-            self.storage.start_ticket(ticket.id, branch=ticket.branch)
+            self.storage.start_ticket(
+                ticket.id, branch=ticket.branch, actor_id=config.actor_id
+            )
 
         branch = ticket.branch or f"geas/{ticket.id}"
 

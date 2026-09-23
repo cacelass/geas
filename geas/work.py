@@ -425,7 +425,7 @@ def cmd_start(storage: Storage, args: list[str]) -> int:
     # ── create branch ──
     branch = f"{ticket.id[:8]}-{ticket.title.replace(' ', '-')[:20]}"
     g.create_branch(branch)
-    storage.start_ticket(ticket.id, commit_before=before, branch=branch)
+    storage.start_ticket(ticket.id, commit_before=before, branch=branch, actor_id="me")
 
     print(f"START {ticket.id[:8]}")
     print(f"  branch: {branch}")

@@ -19,6 +19,7 @@ from geas.models import (
     Event,
     Execution,
     Organization,
+    Policy,
     Repository,
     Resource,
     ResourceLock,
@@ -67,15 +68,23 @@ class Storage:
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(agents)")}
         if "role_id" not in columns:
             self.conn.execute("ALTER TABLE agents ADD COLUMN role_id TEXT")
+        # §43: perfil de despliegue (individual|team|enterprise). Las bases
+        # creadas antes de los perfiles no tienen la columna; sin migración,
+        # una actualización perdería el perfil de la organización.
+        org_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(organizations)")}
+        if "profile" not in org_columns:
+            self.conn.execute(
+                "ALTER TABLE organizations ADD COLUMN profile TEXT DEFAULT 'individual'"
+            )
         self.conn.commit()
 
     # ─── Organizations ──────────────────────────────────────────────────
 
     def create_organization(self, org: Organization) -> Organization:
         self.conn.execute(
-            "INSERT INTO organizations (id, name, description, created_at, active) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (org.id, org.name, org.description, org.created_at, org.active),
+            "INSERT INTO organizations (id, name, description, created_at, active, "
+            "profile) VALUES (?, ?, ?, ?, ?, ?)",
+            (org.id, org.name, org.description, org.created_at, org.active, org.profile),
         )
         self.conn.commit()
         return org
@@ -86,9 +95,47 @@ class Storage:
         ).fetchone()
         return _row_to_org(row) if row else None
 
+    def get_organization_by_name(self, name: str) -> Organization | None:
+        """§43: lookup para `geas sync` — idempotente por nombre."""
+        row = self.conn.execute(
+            "SELECT * FROM organizations WHERE name = ? "
+            "ORDER BY created_at LIMIT 1",
+            (name,),
+        ).fetchone()
+        return _row_to_org(row) if row else None
+
     def list_organizations(self) -> list[Organization]:
         rows = self.conn.execute("SELECT * FROM organizations ORDER BY name").fetchall()
         return [_row_to_org(r) for r in rows]
+
+    def set_organization_profile(self, org_id: str, profile: str) -> bool:
+        """§43: cambia el perfil de despliegue de una organización."""
+        cur = self.conn.execute(
+            "UPDATE organizations SET profile = ? WHERE id = ?", (profile, org_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def update_organization_fields(
+        self, org_id: str, *, description: str | None = None, profile: str | None = None
+    ) -> bool:
+        """§43: convergencia de `geas sync` — description y profile declarativos."""
+        sets: list[str] = []
+        values: list[str] = []
+        if description is not None:
+            sets.append("description = ?")
+            values.append(description)
+        if profile is not None:
+            sets.append("profile = ?")
+            values.append(profile)
+        if not sets:
+            return False
+        values.append(org_id)
+        cur = self.conn.execute(
+            f"UPDATE organizations SET {', '.join(sets)} WHERE id = ?", values
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # ─── Departments ────────────────────────────────────────────────────
 
@@ -113,6 +160,24 @@ class Storage:
         row = self.conn.execute(
             "SELECT * FROM departments WHERE id = ?", (dept_id,)
         ).fetchone()
+        return _row_to_dept(row) if row else None
+
+    def get_department_by_name(
+        self, org_id: str, name: str, parent_id: str | None = None
+    ) -> Department | None:
+        """§43: lookup para `geas sync` — idempotente por nombre y padre."""
+        if parent_id:
+            row = self.conn.execute(
+                "SELECT * FROM departments WHERE organization_id = ? AND name = ? "
+                "AND parent_department_id = ? ORDER BY created_at LIMIT 1",
+                (org_id, name, parent_id),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM departments WHERE organization_id = ? AND name = ? "
+                "AND parent_department_id IS NULL ORDER BY created_at LIMIT 1",
+                (org_id, name),
+            ).fetchone()
         return _row_to_dept(row) if row else None
 
     def list_departments(self, org_id: str) -> list[Department]:
@@ -146,6 +211,23 @@ class Storage:
         ).fetchone()
         return _row_to_role(row) if row else None
 
+    def get_role_by_name(self, org_id: str, name: str) -> Role | None:
+        """§43: lookup para `geas sync` — idempotente por nombre."""
+        row = self.conn.execute(
+            "SELECT * FROM roles WHERE organization_id = ? AND name = ?",
+            (org_id, name),
+        ).fetchone()
+        return _row_to_role(row) if row else None
+
+    def update_role_permissions(self, role_id: str, permissions: list[str]) -> bool:
+        """§43: convergencia de `geas sync` — los permisos declarativos mandan."""
+        cur = self.conn.execute(
+            "UPDATE roles SET permissions = ? WHERE id = ?",
+            (json.dumps(permissions), role_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def list_roles(self, org_id: str) -> list[Role]:
         rows = self.conn.execute(
             "SELECT * FROM roles WHERE organization_id = ? ORDER BY name",
@@ -166,6 +248,87 @@ class Storage:
             )
             self.conn.commit()
         return True
+
+    # ─── Policies ───────────────────────────────────────────────────────
+
+    def create_policy(self, policy: Policy) -> Policy:
+        self.conn.execute(
+            "INSERT INTO policies (id, organization_id, department_id, name, "
+            "description, permissions, created_at, active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                policy.id,
+                policy.organization_id,
+                policy.department_id or None,
+                policy.name,
+                policy.description,
+                json.dumps(policy.permissions),
+                policy.created_at,
+                policy.active,
+            ),
+        )
+        self.conn.commit()
+        return policy
+
+    def get_policy(self, policy_id: str) -> Policy | None:
+        row = self.conn.execute(
+            "SELECT * FROM policies WHERE id = ?", (policy_id,)
+        ).fetchone()
+        return _row_to_policy(row) if row else None
+
+    def list_policies(self, org_id: str) -> list[Policy]:
+        rows = self.conn.execute(
+            "SELECT * FROM policies WHERE organization_id = ? ORDER BY name",
+            (org_id,),
+        ).fetchall()
+        return [_row_to_policy(r) for r in rows]
+
+    def get_policy_by_name(
+        self, org_id: str, name: str, department_id: str | None = None
+    ) -> Policy | None:
+        """§43: lookup para `geas sync` — idempotente por nombre."""
+        if department_id:
+            row = self.conn.execute(
+                "SELECT * FROM policies WHERE organization_id = ? AND name = ? "
+                "AND department_id = ? ORDER BY created_at LIMIT 1",
+                (org_id, name, department_id),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM policies WHERE organization_id = ? AND name = ? "
+                "AND department_id IS NULL ORDER BY created_at LIMIT 1",
+                (org_id, name),
+            ).fetchone()
+        return _row_to_policy(row) if row else None
+
+    def update_policy_fields(
+        self,
+        policy_id: str,
+        *,
+        description: str | None = None,
+        permissions: list[str] | None = None,
+    ) -> bool:
+        """§43: convergencia de `geas sync` para políticas declarativas.
+
+        El binding a departamento se decide en creación; mover una política
+        de departamento se hace recreándola (update no re-binding).
+        """
+        sets: list[str] = []
+        values: list[str] = []
+        if description is not None:
+            sets.append("description = ?")
+            values.append(description)
+        if permissions is not None:
+            sets.append("permissions = ?")
+            values.append(json.dumps(permissions))
+        if not sets:
+            return False
+        values.append(policy_id)
+        cur = self.conn.execute(
+            f"UPDATE policies SET {', '.join(sets)} WHERE id = ?", values
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # ─── Users ──────────────────────────────────────────────────────────
 
@@ -293,6 +456,15 @@ class Storage:
     def get_repository(self, repo_id: str) -> Repository | None:
         row = self.conn.execute(
             "SELECT * FROM repositories WHERE id = ?", (repo_id,)
+        ).fetchone()
+        return _row_to_repo(row) if row else None
+
+    def get_repository_by_name(self, org_id: str, name: str) -> Repository | None:
+        """§43: lookup para `geas sync` — idempotente por nombre."""
+        row = self.conn.execute(
+            "SELECT * FROM repositories WHERE organization_id = ? AND name = ? "
+            "ORDER BY rowid LIMIT 1",
+            (org_id, name),
         ).fetchone()
         return _row_to_repo(row) if row else None
 
@@ -553,15 +725,27 @@ class Storage:
         return cur.rowcount > 0
 
     def start_ticket(
-        self, ticket_id: str, commit_before: str = "", branch: str = ""
+        self,
+        ticket_id: str,
+        commit_before: str = "",
+        branch: str = "",
+        actor_id: str = "",
     ) -> bool:
+        """§24/§39: claim atómico de un ticket FREE.
+
+        El UPDATE con guardia de estado ES la operación atómica: dos
+        procesos concurrentes que lean FREE no pueden reclamar los dos el
+        mismo ticket (check-then-act TOCTOU-safe en una sola sentencia).
+        Devuelve False si el ticket ya no está FREE.
+        """
         from datetime import datetime
 
         now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE tickets SET status = 'IN_PROGRESS', started_at = ?, "
-            "commit_before = ?, branch = ? WHERE id = ?",
-            (now, commit_before, branch, ticket_id),
+            "commit_before = ?, branch = ?, assigned_actor_id = ? "
+            "WHERE id = ? AND status = 'FREE'",
+            (now, commit_before, branch, actor_id or "", ticket_id),
         )
         self.conn.commit()
         return cur.rowcount > 0
@@ -784,7 +968,8 @@ CREATE TABLE IF NOT EXISTS organizations (
     name TEXT NOT NULL,
     description TEXT DEFAULT '',
     created_at TEXT NOT NULL,
-    active INTEGER DEFAULT 1
+    active INTEGER DEFAULT 1,
+    profile TEXT DEFAULT 'individual'  -- §43: individual|team|enterprise
 );
 
 CREATE TABLE IF NOT EXISTS departments (
@@ -802,6 +987,17 @@ CREATE TABLE IF NOT EXISTS roles (
     organization_id TEXT NOT NULL REFERENCES organizations(id),
     name TEXT NOT NULL,
     permissions TEXT DEFAULT '[]'  -- JSON array
+);
+
+CREATE TABLE IF NOT EXISTS policies (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    department_id TEXT REFERENCES departments(id),
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    permissions TEXT DEFAULT '[]',  -- JSON array
+    created_at TEXT NOT NULL,
+    active INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -954,6 +1150,7 @@ def _row_to_org(row: sqlite3.Row) -> Organization:
         description=row["description"],
         created_at=row["created_at"],
         active=bool(row["active"]),
+        profile=row["profile"],
     )
 
 
@@ -975,6 +1172,19 @@ def _row_to_role(row: sqlite3.Row) -> Role:
         organization_id=row["organization_id"],
         name=row["name"],
         permissions=json.loads(row["permissions"]),
+    )
+
+
+def _row_to_policy(row: sqlite3.Row) -> Policy:
+    return Policy(
+        id=row["id"],
+        organization_id=row["organization_id"],
+        department_id=row["department_id"],
+        name=row["name"],
+        description=row["description"],
+        permissions=json.loads(row["permissions"]),
+        created_at=row["created_at"],
+        active=bool(row["active"]),
     )
 
 
