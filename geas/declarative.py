@@ -25,7 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from geas.models import ALL_PERMISSIONS, DEFAULT_ROLES
+from geas.models import ALL_PERMISSIONS, DEFAULT_ROLES, Visibility
+from geas.profiles import sections_for
 
 
 def _read_kv(path: Path) -> dict[str, str]:
@@ -222,6 +223,14 @@ def load_structure(root: str | Path) -> DeclarativeStructure:
         )
 
     # Validación global: duplicados y referencias a departamentos inexistentes
+    visibilities = {v.value for v in Visibility}
+    for repo in repositories:
+        if repo.visibility not in visibilities:
+            raise ValueError(
+                f"REPOSITORY_VISIBILITY: '{repo.name}' declara visibility "
+                f"'{repo.visibility}' (esperada: "
+                f"{', '.join(sorted(visibilities))})"
+            )
     names = [d.name for d in departments]
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
@@ -285,7 +294,8 @@ def build_structure(
 
     `repositories` mapea nombre de departamento → repos; la clave "" son
     repos de organización. Los roles se siembran desde DEFAULT_ROLES (§7)
-    para que `geas sync` tenga algo que sincronizar."""
+    solo para los perfiles que sincronizan la sección roles (§43: Team y
+    Enterprise), para que `geas sync` tenga algo que sincronizar."""
     depts = [DeclarativeDepartment(name=name) for name in (departments or [])]
     repos: list[DeclarativeRepository] = []
     for dept_name, repo_names in (repositories or {}).items():
@@ -293,10 +303,16 @@ def build_structure(
             repos.append(
                 DeclarativeRepository(name=repo_name, department=dept_name or None)
             )
-    roles = [
-        DeclarativeRole(name=name, permissions=list(perms))
-        for name, perms in DEFAULT_ROLES.items()
-    ]
+    # Los roles declarativos solo se siembran para perfiles que
+    # sincronizan la sección roles (§43): Individual no los declara.
+    roles = (
+        [
+            DeclarativeRole(name=name, permissions=list(perms))
+            for name, perms in DEFAULT_ROLES.items()
+        ]
+        if "roles" in sections_for(profile)
+        else []
+    )
     return DeclarativeStructure(
         org_name=org_name,
         org_description=description,

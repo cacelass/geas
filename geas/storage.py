@@ -119,21 +119,31 @@ class Storage:
     def update_organization_fields(
         self, org_id: str, *, description: str | None = None, profile: str | None = None
     ) -> bool:
-        """§43: convergencia de `geas sync` — description y profile declarativos."""
+        """§43: convergencia de `geas sync` — description y profile declarativos.
+
+        Devuelve True SOLO si hubo un cambio real: el UPDATE exige que al
+        menos un campo difiera del valor actual, así el segundo `geas sync`
+        no cuenta una convergencia que ya ocurrió (idempotencia §43)."""
         sets: list[str] = []
-        values: list[str] = []
+        set_params: list[object] = []
+        where: list[str] = []
+        where_params: list[object] = []
         if description is not None:
             sets.append("description = ?")
-            values.append(description)
+            set_params.append(description)
+            where.append("description != ?")
+            where_params.append(description)
         if profile is not None:
             sets.append("profile = ?")
-            values.append(profile)
+            set_params.append(profile)
+            where.append("profile != ?")
+            where_params.append(profile)
         if not sets:
             return False
-        values.append(org_id)
-        cur = self.conn.execute(
-            f"UPDATE organizations SET {', '.join(sets)} WHERE id = ?", values
-        )
+        sql = f"UPDATE organizations SET {', '.join(sets)} WHERE id = ?"
+        if where:
+            sql += " AND (" + " OR ".join(where) + ")"
+        cur = self.conn.execute(sql, [*set_params, org_id, *where_params])
         self.conn.commit()
         return cur.rowcount > 0
 
@@ -459,13 +469,26 @@ class Storage:
         ).fetchone()
         return _row_to_repo(row) if row else None
 
-    def get_repository_by_name(self, org_id: str, name: str) -> Repository | None:
-        """§43: lookup para `geas sync` — idempotente por nombre."""
-        row = self.conn.execute(
-            "SELECT * FROM repositories WHERE organization_id = ? AND name = ? "
-            "ORDER BY rowid LIMIT 1",
-            (org_id, name),
-        ).fetchone()
+    def get_repository_by_name(
+        self, org_id: str, name: str, department_id: str | None = None
+    ) -> Repository | None:
+        """§43: lookup para `geas sync` — idempotente por nombre.
+
+        La unicidad de repositorios es por (org, nombre, departamento):
+        YouTube/backend y Gmail/backend conviven (§43). `department_id`
+        None busca repos de organización (sin departamento)."""
+        if department_id is None:
+            row = self.conn.execute(
+                "SELECT * FROM repositories WHERE organization_id = ? AND name = ? "
+                "AND department_id IS NULL ORDER BY rowid LIMIT 1",
+                (org_id, name),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM repositories WHERE organization_id = ? AND name = ? "
+                "AND department_id = ? ORDER BY rowid LIMIT 1",
+                (org_id, name, department_id),
+            ).fetchone()
         return _row_to_repo(row) if row else None
 
     def list_repositories(self, org_id: str) -> list[Repository]:

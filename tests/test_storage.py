@@ -547,7 +547,11 @@ def test_lookups_declarativos_por_nombre(storage, org, dept, repo):
     assert (
         storage.get_department_by_name(org.id, dept.name, parent_id="x-none") is None
     )
-    assert storage.get_repository_by_name(org.id, repo.name).id == repo.id
+    # §43: la unicidad de repos es por (org, nombre, departamento)
+    assert (
+        storage.get_repository_by_name(org.id, repo.name, repo.department_id).id
+        == repo.id
+    )
     assert storage.get_repository_by_name(org.id, "no") is None
 
 

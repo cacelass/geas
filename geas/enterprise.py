@@ -17,7 +17,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from geas.declarative import (
-    DeclarativeStructure,
     build_structure,
     render_ci_workflow,
     render_structure,
@@ -57,20 +56,3 @@ def generate_enterprise(
     workflow.write_text(render_ci_workflow())
     written.append(workflow)
     return written
-
-
-def tree_summary(struct: DeclarativeStructure) -> list[str]:
-    """Resumen legible de la estructura para la salida de la CLI (§43)."""
-    lines = [
-        f"organization: {struct.org_name} (profile: {struct.profile})",
-        f"departments: {len(struct.departments)}",
-        f"repositories: {len(struct.repositories)}",
-        f"roles: {len(struct.roles)}",
-        f"policies: {len(struct.policies)}",
-    ]
-    for dept in struct.departments:
-        lines.append(f"  - {dept.name}" + (f" (parent: {dept.parent})" if dept.parent else ""))
-    for repo in struct.repositories:
-        where = f" @ {repo.department}" if repo.department else ""
-        lines.append(f"  repo: {repo.name}{where}")
-    return lines
