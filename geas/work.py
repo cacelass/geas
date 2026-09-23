@@ -1,7 +1,7 @@
 """
 geas.work — Comandos de trabajo de Geas (spec §34).
 
-    work init            Registrar repo + generar .orchestrator/config.yml (§33)
+    work init            Registrar repo + generar .geas.yml (§33)
     work sync            Sincronizar con Geas y con Git (§24)
     work status          Estado del entorno (README/NOT READY) (§25)
     work tasks           Tickets disponibles para el actor actual (§17)
@@ -35,11 +35,11 @@ from geas.storage import Storage
 
 
 class WorkContext:
-    """Contexto local de un repositorio: lee .orchestrator/config.yml."""
+    """Contexto local de un repositorio: lee .geas.yml."""
 
     def __init__(self, repo_path: str | Path | None = None):
         self.repo_path = Path(repo_path or ".")
-        self.config_file = self.repo_path / ".orchestrator" / "config.yml"
+        self.config_file = self.repo_path / ".geas.yml"
 
     def exists(self) -> bool:
         return self.config_file.exists()
@@ -69,7 +69,7 @@ def _storage(db_path: str = "geas.db") -> Storage:
 
 
 def cmd_init(storage: Storage, args: list[str]) -> int:
-    """work init — detecta el repo git, lo registra y genera config.yml (§33)."""
+    """work init — detecta el repo git, lo registra y genera .geas.yml (§33)."""
     path = args[0] if args else "."
     repo_path = Path(path)
 
@@ -122,7 +122,7 @@ def cmd_init(storage: Storage, args: list[str]) -> int:
     )
     storage.create_repository(repo)
 
-    # 5. Generar .orchestrator/config.yml
+    # 5. Generar .geas.yml
     ctx = WorkContext(repo_path)
     ctx.write_config(
         {
@@ -227,9 +227,9 @@ def cmd_status(storage: Storage, args: list[str]) -> int:
     # Config
     checks.append(
         (
-            "Orchestrator",
+            "GEAS",
             ctx.exists(),
-            "falta .orchestrator/config.yml" if not ctx.exists() else "ok",
+            "falta .geas.yml" if not ctx.exists() else "ok",
         )
     )
 

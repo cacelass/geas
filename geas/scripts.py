@@ -78,8 +78,6 @@ def generate_scripts(repo_path: str | Path) -> list[Path]:
     Género: script operativo de un repo. Los genera `work init`.
     """
     root = Path(repo_path)
-    scripts_dir = root / ".orchestrator"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
 
     created: list[Path] = []
     for name, content in SCRIPTS.items():

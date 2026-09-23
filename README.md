@@ -135,7 +135,7 @@ geas events <org_id>              # event log
 geas audit <org_id>               # log de auditoría
 
 # Trabajo desde un repositorio registrado
-geas work init .                  # registrar repo y crear .orchestrator/config.yml
+geas work init .                  # registrar repo y crear .geas.yml
 geas work status .                # comprobar que el entorno está listo
 geas work sync .                  # estado de Git y tickets del repositorio
 geas work tasks <actor_id>        # tickets disponibles para un actor

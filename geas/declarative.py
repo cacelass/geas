@@ -4,7 +4,7 @@ La estructura versionada en Git define el estado DESEADO de la
 organización; la base de datos de GEAS es la única fuente de verdad del
 estado OPERATIVO (tickets, locks, ejecuciones...). Este módulo lee,
 renderiza y valida la estructura declarativa en un formato simple
-`clave: valor` — sin YAML, zero deps, igual que `.orchestrator/config.yml`.
+`clave: valor` — sin YAML, zero deps, igual que `.geas.yml`.
 
 Árbol soportado (§43):
 

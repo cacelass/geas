@@ -114,7 +114,7 @@ class TestWorkStatus:
         assert cmd_status(storage, [str(git_repo)]) == 0
 
     def test_status_not_ready(self, storage, git_repo, org):
-        # Sin .orchestrator/config.yml → NOT READY
+        # Sin .geas.yml → NOT READY
         assert cmd_status(storage, [str(git_repo)]) != 0
 
     def test_status_json(self, storage, git_repo, org):

@@ -66,7 +66,7 @@ Detecta el repo git, identifica el remote, registra el repositorio en la
 BD y genera:
 
 ```
-.orchestrator/config.yml   identidad del repo (org, departamento, repo, MCP)
+.geas.yml   identidad del repo (org, departamento, repo, MCP)
 status.sh                  §25 — READY TO WORK / NOT READY (--json para agentes)
 sync.sh                    sincroniza repo ↔ GEAS ↔ Git
 start.sh <ticket_id>       claim atómico + commit_before + rama
@@ -96,7 +96,7 @@ Pasos:
    - un solo agente/persona en local  → `geas init "Mi Org"`            (Individual)
    - equipo compartido                → `geas init "Mi Org" --profile team`
    - varios departamentos/empresa     → `geas init "Mi Org" --profile enterprise`
-3. Registra el repo: `geas work init .` — genera .orchestrator/config.yml
+3. Registra el repo: `geas work init .` — genera .geas.yml
    y los scripts status/sync/start/finish (§25). Commitéalos junto con
    esta guía si procede.
 4. Crea un ticket de humo y verifica el ciclo completo:
@@ -129,7 +129,7 @@ un `.geas.yml` del repo? ¿Hace falta un CI/CD dentro del repo?
 
 Tickets, locks, ejecuciones, assignments, heartbeats: **solo en la BD**
 (deliberado desde §43 — ver SPEC.md). El fichero declarativo del repo
-(`.orchestrator/config.yml`, y los `organization.yml/roles/...` de
+(`.geas.yml`, y los `organization.yml/roles/...` de
 Enterprise) describe el estado **deseado**; `geas sync` lo aplica a la
 BD. Un `.geas.yml` que guardara tickets sería una segunda fuente de
 verdad y reintroduciría exactamente los problemas de concurrencia que la

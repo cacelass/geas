@@ -1,5 +1,10 @@
 esta todo? # ORCHESTRATOR
 
+> **Nota de naming:** el spec se escribió con el nombre conceptual
+> "Orchestrator". El producto implementado se llama **GEAS** y todo el
+> código, la CLI, los scripts y la configuración de repositorio
+> (`.geas.yml`) usan ese nombre.
+
 ## 1. Concepto
 
 **Orchestrator** es una plataforma de coordinación del trabajo de desarrolladores humanos y agentes de IA dentro de una organización.

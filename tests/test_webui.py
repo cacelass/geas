@@ -136,7 +136,7 @@ class TestServerRoutes:
         base = f"http://127.0.0.1:{server.server_port}"
         try:
             body = urlopen(base).read().decode()
-            assert "Geas · Orchestrator" in body
+            assert "Geas" in body
             assert "YouTube" in body
         finally:
             server.shutdown()

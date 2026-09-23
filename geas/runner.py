@@ -1,12 +1,12 @@
 """
 geas.runner — ExecutionRunner: ejecución de un ticket por un agente (§27).
 
-Une el ciclo completo que el Orchestrator registra y el Harness controla:
+Une el ciclo completo que GEAS registra y el Harness controla:
 
-    Orchestrator ──► Execution ──► Harness ──► Agent ──► Worktree ──► Tests ──► Commit
+    GEAS ──► Execution ──► Harness ──► Agent ──► Worktree ──► Tests ──► Commit
 
-El runner NO decide si el agente puede ejecutar el ticket: eso lo decide el
-Orchestrator (estado del ticket, permisos del actor). El runner materializa
+El runner NO decide si el agente puede ejecutar el ticket: eso lo decide
+GEAS (estado del ticket, permisos del actor). El runner materializa
 esa autorización en una ejecución real, aislada y trazada:
 
     1. valida el ticket y registra una Execution (model traceability §28)

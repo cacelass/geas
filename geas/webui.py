@@ -185,7 +185,7 @@ def render_dashboard(storage: Storage) -> str:
     orgs = storage.list_organizations()
     if not orgs:
         body = (
-            "<header><h1>Geas · Orchestrator</h1>"
+            "<header><h1>Geas</h1>"
             "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p></header>"
             "<p class='empty'>Sin organizaciones todavía. Crea una con "
             "<code>geas init &quot;Mi Org&quot;</code>.</p>"
@@ -195,7 +195,7 @@ def render_dashboard(storage: Storage) -> str:
             _org_section(storage, org, storage.list_tickets(org.id)) for org in orgs
         )
         body = (
-            "<header><h1>Geas · Orchestrator</h1>"
+            "<header><h1>Geas</h1>"
             "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p></header>"
             + sections
         )
@@ -203,7 +203,7 @@ def render_dashboard(storage: Storage) -> str:
         "<footer>Panel de solo lectura · la escritura pasa por la API/MCP "
         "(<code>POST /api/tools/&lt;tool&gt;</code> con <code>X-Geas-Actor</code>)</footer>"
     )
-    return _page("Geas · Orchestrator", body)
+    return _page("Geas", body)
 
 
 def _resource_row(storage: Storage, resource_id: str) -> str:
