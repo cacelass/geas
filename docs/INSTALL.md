@@ -9,18 +9,31 @@ todo solo.
 ## 1. Instalar la herramienta
 
 GEAS es un paquete Python con entry point `geas` (stdlib pura, cero
-dependencias de runtime). Cualquiera de estas formas vale:
+dependencias de runtime). **Se instala desde el repositorio, no desde
+PyPI**: el nombre `geas` en PyPI pertenece a otro proyecto no relacionado,
+así que `pipx install geas` descargaría ese paquete, no este.
 
 ```bash
+# Desde el repo GEAS (fuente canónica)
+cd <ruta-al-repo-geas>
+
 # Con pipx (recomendado — aislado, comando global)
-pipx install geas
+pipx install .
 
 # Con uv tool
-uv tool install geas
+uv tool install .
 
-# Desde el repo en desarrollo
+# Editable, para desarrollo
+pipx install --editable .     # o: uv tool install --editable .
+
+# Desde el repo en desarrollo (venv local)
 uv venv && uv pip install -e ".[dev]"
 ```
+
+> ⚠️ Si ya probaste `pipx install geas` y te instaló un paquete ajeno
+> (v0.3.0, github.com/teka1905/geas — generador de contratos OpenAPI),
+> desinstálalo: `pipx uninstall geas`. Luego reinstala desde el repo con
+> `pipx install .`.
 
 Comprueba que quedó instalado:
 
@@ -90,8 +103,9 @@ Integra GEAS en este repositorio. GEAS coordina el trabajo de humanos y
 agentes de IA: tickets, dependencias, recursos, locks, permisos.
 
 Pasos:
-1. Si `geas` no está instalado, instálalo con `pipx install geas`
-   (o `uv tool install geas`).
+1. Si `geas` no está instalado, instálalo desde el repo: `pipx install .`
+   (o `uv tool install .`; nunca `pipx install geas` — el nombre en PyPI
+   pertenece a otro proyecto no relacionado).
 2. Crea la organización con el perfil correcto:
    - un solo agente/persona en local  → `geas init "Mi Org"`            (Individual)
    - equipo compartido                → `geas init "Mi Org" --profile team`
@@ -172,7 +186,7 @@ Un workflow de ejemplo (Team/Enterprise) queda en el repo como
 
 ### 5.3 Onboarding de un agent en un repo
 
-1. `pipx install geas`
+1. `pipx install .` (desde el repo GEAS; ver sección 1)
 2. `geas init "Mi Org" --profile team` (o el perfil de la org)
 3. `geas work init .` — registra el repo, genera config + scripts
 4. `geas work tasks <actor_id>` — qué tickets puede ejecutar

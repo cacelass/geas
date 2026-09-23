@@ -82,16 +82,21 @@ ocurrieron.
 ## Instalación
 
 GEAS es un paquete Python con entry point `geas` (stdlib pura, cero
-dependencias de runtime):
+dependencias de runtime). **Se instala desde el repositorio**, no desde
+PyPI: el nombre `geas` en PyPI pertenece a otro proyecto no relacionado
+(⚠️ `pipx install geas` descargaría ese paquete, no este).
 
 ```bash
-pipx install geas          # o: uv tool install geas
+git clone <repo-geas> && cd geas
+
+# Comando global aislado (cualquiera de las dos)
+uv tool install .          # o: pipx install .
+uv tool install --editable .   # editable, para desarrollo (o pipx install --editable .)
 ```
 
 O desde el repo en desarrollo:
 
 ```bash
-git clone <repo> && cd geas
 uv venv && uv pip install -e ".[dev]"
 ```
 
@@ -204,8 +209,8 @@ uv run pytest tests/ -q
 
 ## Roadmap
 
-- **MVP 1** (actual): CLI · SQLite · Tickets · Dependencias · Recursos · Locks · Git (commit_before/after)
-- **MVP 2**: PostgreSQL · Users/Agents · Roles · Permisos · Web UI · Audit · Event Log · GitHub/GitLab
-- **MVP 3**: Agent Harness · Agent Runner · Multi-provider · Model traceability · Worktrees · Copier
-- **Perfiles (§43)**: Individual/Team/Enterprise — estructura declarativa + `geas sync` + MCP de contexto (implementado)
-- **Enterprise**: SSO/OIDC · Advanced RBAC · enforcement de Policies · Observability · driver PostgreSQL (§42)
+- **MVP 1** — ✅ hecho: CLI · SQLite · Tickets · Dependencias · Recursos · Locks · Git (commit_before/after)
+- **MVP 2** — ✅ hecho (driver PostgreSQL pendiente, §42): Users/Agents · Roles · Permisos · Web UI · Audit · Event Log · Git/GitHub
+- **MVP 3** — 🟡 parcial: Agent Harness y Runner con worktrees (implementados) · Multi-provider y Copier (pendientes)
+- **Perfiles (§43)** — ✅ implementado: Individual/Team/Enterprise, estructura declarativa + `geas sync` + MCP de contexto + gates de perfil en la CLI
+- **Enterprise (pendiente)**: SSO/OIDC · Advanced RBAC · enforcement de Policies · Observability · driver PostgreSQL (§42)
