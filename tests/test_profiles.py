@@ -14,7 +14,11 @@ from geas.profiles import (
     PROFILES,
     TEAM,
     backend_for,
+    components,
+    normalize_profile,
     profile_flags,
+    profile_supports,
+    sections_for,
 )
 
 
@@ -31,7 +35,9 @@ def test_team_activa_colaboracion_no_sso():
     assert TEAM.web_ui is True
     assert TEAM.mcp_enabled is True
     assert TEAM.ai_agents is True
-    assert TEAM.departments is True
+    # §43: la definición de producto mueve departamentos a ENTERPRISE.
+    # La matriz §36 previa lo dejaba True; manda §43 (Team sin deptos).
+    assert TEAM.departments is False
     assert TEAM.sso is False  # SSO es de ENTERPRISE (§36)
     assert TEAM.observability is False
 
@@ -139,3 +145,87 @@ def test_backend_for_costura_42():
     # flags_existentes (§36 ya lo cablea). Estas líneas eran AttributeError
     # = .team/.enterprise no son flags de ProfileFlags (son NOMBRES de
     # perfil) — el contrato aditivo vive en el test §36.
+
+
+# §43 — perfiles de producto Individual/Team/Enterprise
+#
+# El selector de instalación (§44 del usuario): 1=Individual, 2=Team,
+# 3=Enterprise. Los nombres de producto son alias del canon interno
+# MINIMAL/TEAM/ENTERPRISE (§36) y `normalize_profile` devuelve el nombre
+# de producto con el que se guarda en la base de datos.
+
+
+@pytest.mark.parametrize(
+    ("name", "product_name"),
+    [
+        ("Individual", "individual"),
+        ("1", "individual"),
+        ("TEAM", "team"),
+        ("2", "team"),
+        ("Enterprise", "enterprise"),
+        ("3", "enterprise"),
+        ("  team ", "team"),
+        ("MINIMAL", "individual"),
+        ("ENTERPRISE", "enterprise"),
+    ],
+)
+def test_normalize_profile_acepta_alias_de_producto(name, product_name):
+    assert normalize_profile(name) == product_name
+
+
+@pytest.mark.parametrize("bad", ["", None, "TYPO", "otra-cosa", "4"])
+def test_normalize_profile_falla_claro_en_desconocidos(bad):
+    with pytest.raises(ValueError):
+        normalize_profile(bad)
+
+
+def test_profile_flags_acepta_alias_numericos():
+    assert profile_flags("1") is MINIMAL
+    assert profile_flags("2") is TEAM
+    assert profile_flags("3") is ENTERPRISE
+    assert profile_flags("individual") is MINIMAL
+
+
+def test_secciones_declarativas_por_perfil():
+    assert sections_for("individual") == frozenset({"organization", "repositories"})
+    assert sections_for("team") == frozenset({"organization", "repositories", "roles"})
+    assert sections_for("enterprise") == frozenset(
+        {"organization", "repositories", "roles", "departments", "policies"}
+    )
+
+
+def test_profile_supports_secciones():
+    # Individual: repositorios sí (Git integration es núcleo), políticas no
+    assert profile_supports("individual", "repositories") is True
+    assert profile_supports("individual", "policies") is False
+    assert profile_supports("individual", "departments") is False
+    # Team sincroniza roles, no departments/policies (§43)
+    assert profile_supports("team", "roles") is True
+    assert profile_supports("team", "departments") is False
+    # Enterprise lo sincroniza todo
+    assert profile_supports("enterprise", "departments") is True
+    assert profile_supports("enterprise", "policies") is True
+
+
+def test_components_individual_no_arrastra_enterprise():
+    ind = components("individual")
+    assert "SQLite" in ind
+    assert "Git integration" in ind
+    assert "Departments" not in ind
+    assert "SSO/OIDC" not in ind
+    assert "Governance" not in ind
+
+
+def test_components_enterprise_incluye_capa_organizativa():
+    ent = components("enterprise")
+    assert "Departments" in ent
+    assert "Policies" in ent
+    assert "SSO/OIDC" in ent
+    assert "Governance" in ent
+    assert "Roles" in ent
+
+
+def test_flag_policies_solo_enterprise():
+    assert ENTERPRISE.policies is True
+    assert TEAM.policies is False
+    assert MINIMAL.policies is False
