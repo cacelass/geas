@@ -240,3 +240,142 @@ class TestAuthorization:
         assert ticket["title"] == "Después"
         assert ticket["description"] == "nueva"
         assert ticket["priority"] == 3
+
+
+class TestOrgContextViaMcp:
+    """Contexto organizativo del MCP (§43): perfil, componentes y estructura."""
+
+    def test_get_organization_perfil_y_componentes(self, mcp, capsys):
+        r = mcp.get_organization()
+        assert r["success"] is True
+        data = r["data"]
+        assert data["name"] == "Google"
+        assert data["profile"] == "individual"
+        assert data["backend"] == "sqlite"
+        assert "SQLite" in data["components"]
+        assert "Departments" not in data["components"]
+
+    def test_get_organization_id_explicita(self, mcp, org):
+        r = mcp.get_organization(org.id)
+        assert r["success"] is True
+        assert r["data"]["id"] == org.id
+
+    def test_get_organization_enterprise_expone_departments(self, storage):
+        from geas.models import Agent, Role
+
+        ent = Organization(name="Ent", profile="enterprise")
+        storage.create_organization(ent)
+        ent_role = Role(
+            organization_id=ent.id,
+            name="ent-admin",
+            permissions=DEFAULT_PERMISSIONS,
+        )
+        storage.create_role(ent_role)
+        actor_ent = Agent(
+            id="agent-ent",
+            organization_id=ent.id,
+            name="agent-ent",
+            provider="test",
+            model="test",
+            role_id=ent_role.id,
+        )
+        storage.create_agent(actor_ent)
+        from geas.mcp import GeasMcp
+
+        mcp_ent = GeasMcp(storage, actor_id=actor_ent.id, org_id=ent.id)
+        r = mcp_ent.get_organization(ent.id)
+        assert r["success"] is True
+        assert r["data"]["profile"] == "enterprise"
+        assert r["data"]["backend"] == "postgres"
+        assert "Departments" in r["data"]["components"]
+        assert "Policies" in r["data"]["components"]
+
+    def test_get_organization_sin_org_falla(self, storage):
+        from geas.mcp import GeasMcp
+
+        solo = GeasMcp(storage, actor_id="x")
+        r = solo.get_organization()
+        assert r["success"] is False
+
+    def test_list_departments(self, mcp, storage, org):
+        from geas.models import Department
+
+        storage.create_department(Department(organization_id=org.id, name="YouTube"))
+        storage.create_department(Department(organization_id=org.id, name="Gmail"))
+        r = mcp.list_departments()
+        assert r["success"] is True
+        names = {d["name"] for d in r["data"]["departments"]}
+        assert names == {"YouTube", "Gmail"}
+
+    def test_get_department_incluye_repos(self, mcp, storage, org):
+        from geas.models import Department, Repository
+
+        dept = Department(organization_id=org.id, name="YouTube")
+        storage.create_department(dept)
+        storage.create_department(Department(organization_id=org.id, name="Gmail"))
+        storage.create_repository(
+            Repository(organization_id=org.id, department_id=dept.id, name="backend")
+        )
+        storage.create_repository(
+            Repository(organization_id=org.id, department_id=dept.id, name="frontend")
+        )
+        r = mcp.get_department("YouTube")
+        assert r["success"] is True
+        assert {x["name"] for x in r["data"]["repositories"]} == {
+            "backend",
+            "frontend",
+        }
+
+    def test_get_department_inexistente_falla(self, mcp):
+        assert mcp.get_department("NoExiste")["success"] is False
+
+    def test_list_repositories(self, mcp, repo):
+        r = mcp.list_repositories()
+        assert r["success"] is True
+        assert {x["name"] for x in r["data"]["repositories"]} == {"youtube-backend"}
+
+    def test_get_permissions_es_el_catalogo_7(self, mcp):
+        r = mcp.get_permissions()
+        assert r["success"] is True
+        assert set(r["data"]["permissions"]) == set(DEFAULT_PERMISSIONS)
+
+    def test_dispatch_expone_las_herramientas_nuevas(self, mcp, org):
+        from geas.mcp import TOOL_NAMES
+
+        for name in (
+            "get_organization",
+            "list_departments",
+            "list_repositories",
+        ):
+            assert name in TOOL_NAMES
+            assert mcp.call(name, {"organization_id": org.id})["success"] is True
+        assert "get_permissions" in TOOL_NAMES
+        assert mcp.call("get_permissions")["success"] is True
+        assert "get_department" in TOOL_NAMES
+        assert (
+            mcp.call("get_department", {"name": "NoExiste"})["success"] is False
+        )  # herramienta accesible, depto inexistente
+
+    def test_sin_permiso_department_read_se_deniega(self, storage, org):
+        from geas.mcp import GeasMcp
+        from geas.models import Agent, Role
+
+        role = Role(
+            organization_id=org.id,
+            name="solo-tickets",
+            permissions=["ticket:read"],
+        )
+        storage.create_role(role)
+        actor = Agent(
+            id="agent-tickets",
+            organization_id=org.id,
+            name="agent-tickets",
+            provider="test",
+            model="test",
+            role_id=role.id,
+        )
+        storage.create_agent(actor)
+        restringido = GeasMcp(storage, actor_id=actor.id, org_id=org.id)
+        r = restringido.get_organization(org.id)
+        assert r["success"] is False
+        assert r["error"] == "FORBIDDEN"

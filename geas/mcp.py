@@ -21,6 +21,13 @@ Herramientas (spec §26):
     report_test_result(...)
     get_execution(ticket_id)
 
+Contexto organizativo (§43):
+    get_organization(organization_id?) → perfil, componentes, backend
+    list_departments(organization_id?)  → departamentos declarados
+    get_department(name, org?)          → departamento + sus repos
+    list_repositories(organization_id?) → repositorios
+    get_permissions()                   → catálogo §7
+
 Arquitectura (§26):
     AI Agent → MCP → Geas API → RBAC → Database
 """
@@ -30,6 +37,7 @@ from __future__ import annotations
 from typing import Any
 
 from geas.models import (
+    ALL_PERMISSIONS,
     AuditLog,
     Event,
     Execution,
@@ -433,7 +441,7 @@ class GeasMcp:
         )
         return _ok({"resource_id": resource_id, "locked": False})
 
-    # ─── Repos y sync ──────────────────────────────────────────────────
+    # ─── Repos ──────────────────────────────────────────────────────
 
     def get_repository_context(self, repository_id: str) -> dict:
         repo = self.storage.get_repository(repository_id)
@@ -470,6 +478,126 @@ class GeasMcp:
                 "resources_locked": locks,
             }
         )
+
+    # ─── Contexto organizativo (§43) ──────────────────────────────────
+
+    def _resolve_org_id(self, organization_id: str = "") -> str:
+        """Org explícita → org del actor → primera; '' si no hay ninguna."""
+        return (
+            organization_id
+            or self.org_id
+            or (
+                self.storage.list_organizations()[0].id
+                if self.storage.list_organizations()
+                else ""
+            )
+        )
+
+    def get_organization(self, organization_id: str = "") -> dict:
+        """Perfil de despliegue, componentes y backend declarado (§43)."""
+        from geas.profiles import backend_for, components
+
+        org_id = self._resolve_org_id(organization_id)
+        org = self.storage.get_organization(org_id) if org_id else None
+        if not org:
+            return _err("No hay organización — ejecuta 'geas init'")
+        denied = self._authorize(org.id, "department:read")
+        if denied:
+            return denied
+        return _ok(
+            {
+                "id": org.id,
+                "name": org.name,
+                "description": org.description,
+                "profile": org.profile,
+                "backend": backend_for(org.profile),
+                "components": sorted(components(org.profile)),
+                "active": org.active,
+            }
+        )
+
+    def list_departments(self, organization_id: str = "") -> dict:
+        org_id = self._resolve_org_id(organization_id)
+        if not org_id:
+            return _err("No hay organización — ejecuta 'geas init'")
+        denied = self._authorize(org_id, "department:read")
+        if denied:
+            return denied
+        depts = self.storage.list_departments(org_id)
+        return _ok(
+            {
+                "organization_id": org_id,
+                "departments": [
+                    {
+                        "id": d.id,
+                        "name": d.name,
+                        "description": d.description,
+                        "parent_department_id": d.parent_department_id,
+                    }
+                    for d in depts
+                ],
+            }
+        )
+
+    def get_department(self, name: str, organization_id: str = "") -> dict:
+        """Departamento por nombre (§43) + los repos que cuelgan de él."""
+        org_id = self._resolve_org_id(organization_id)
+        if not org_id:
+            return _err("No hay organización — ejecuta 'geas init'")
+        denied = self._authorize(org_id, "department:read")
+        if denied:
+            return denied
+        dept = self.storage.get_department_by_name(org_id, name)
+        if not dept:
+            return _err(f"Departamento no encontrado: {name}")
+        repos = [
+            r
+            for r in self.storage.list_repositories(org_id)
+            if r.department_id == dept.id
+        ]
+        return _ok(
+            {
+                "id": dept.id,
+                "name": dept.name,
+                "description": dept.description,
+                "parent_department_id": dept.parent_department_id,
+                "repositories": [
+                    {"id": r.id, "name": r.name, "url": r.url, "provider": r.provider}
+                    for r in repos
+                ],
+            }
+        )
+
+    def list_repositories(self, organization_id: str = "") -> dict:
+        org_id = self._resolve_org_id(organization_id)
+        if not org_id:
+            return _err("No hay organización — ejecuta 'geas init'")
+        denied = self._authorize(org_id, "repository:read")
+        if denied:
+            return denied
+        repos = self.storage.list_repositories(org_id)
+        return _ok(
+            {
+                "organization_id": org_id,
+                "repositories": [
+                    {
+                        "id": r.id,
+                        "name": r.name,
+                        "department_id": r.department_id,
+                        "url": r.url,
+                        "provider": r.provider,
+                        "default_branch": r.default_branch,
+                    }
+                    for r in repos
+                ],
+            }
+        )
+
+    def get_permissions(self) -> dict:
+        """Catálogo §7 — read-only, igual que `geas permission list`."""
+        return _ok({"permissions": sorted(ALL_PERMISSIONS)})
+
+    # ─── Sync ──────────────────────────────────────────────────────
 
     def sync(self) -> dict:
         from geas.git import LocalGitProvider
@@ -684,6 +812,18 @@ class GeasMcp:
                 return self.release_resource(params["resource_id"])
             if tool == "get_repository_context":
                 return self.get_repository_context(params["repository_id"])
+            if tool == "get_organization":
+                return self.get_organization(params.get("organization_id", ""))
+            if tool == "list_departments":
+                return self.list_departments(params.get("organization_id", ""))
+            if tool == "get_department":
+                return self.get_department(
+                    params["name"], params.get("organization_id", "")
+                )
+            if tool == "list_repositories":
+                return self.list_repositories(params.get("organization_id", ""))
+            if tool == "get_permissions":
+                return self.get_permissions()
             if tool == "sync":
                 return self.sync()
             if tool == "report_commit":
@@ -805,6 +945,30 @@ TOOLS = [
         "name": "report_execution",
         "description": "Registrar ejecución (model traceability)",
         "params": ["ticket_id", "provider", "model"],
+    },
+    {
+        "name": "get_organization",
+        "description": "Perfil, componentes y backend declarado de la org (§43)",
+        "params": ["organization_id"],
+    },
+    {
+        "name": "list_departments",
+        "description": "Departamentos de la organización (§43)",
+        "params": ["organization_id"],
+    },
+    {
+        "name": "get_department",
+        "description": "Departamento por nombre + sus repos",
+        "params": ["name", "organization_id"],
+    },
+    {
+        "name": "list_repositories",
+        "description": "Repositorios de la organización (§43)",
+        "params": ["organization_id"],
+    },
+    {
+        "name": "get_permissions",
+        "description": "Catálogo de permisos §7",
     },
 ]
 
