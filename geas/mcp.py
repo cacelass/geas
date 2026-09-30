@@ -619,6 +619,87 @@ class GeasMcp:
             }
         )
 
+    # ─── Actores y recursos (GEAS-007) ──────────────────────────────
+
+    def list_actors(self, organization_id: str = "") -> dict:
+        """Actores (users + agents) de una organización (§GEAS-007).
+
+        Antes la única forma de saber "quién hay" era leer roster.env, un
+        fichero de bootstrap. Con esto, un dispositivo nuevo pregunta a la
+        API en vez de depender de que alguien re-ejecute bootstrap.
+        Rol agent incluido (permiso user:read).
+        """
+        org_id = self._resolve_org_id(organization_id)
+        if not org_id:
+            return _err("No hay organización — ejecuta 'geas init'")
+        denied = self._authorize(org_id, "user:read")
+        if denied:
+            return denied
+        users = self.storage.list_users(org_id)
+        agents = self.storage.list_agents(org_id)
+        return _ok(
+            {
+                "organization_id": org_id,
+                "actors": [
+                    {
+                        "id": u.id,
+                        "name": u.name,
+                        "kind": "user",
+                        "email": u.email,
+                        "department_id": u.department_id,
+                        "role_id": u.role_id,
+                        "active": u.active,
+                    }
+                    for u in users
+                ]
+                + [
+                    {
+                        "id": a.id,
+                        "name": a.name,
+                        "kind": "agent",
+                        "provider": a.provider,
+                        "model": a.model,
+                        "department_id": a.department_id,
+                        "role_id": a.role_id,
+                        "active": a.active,
+                    }
+                    for a in agents
+                ],
+            }
+        )
+
+    def list_resources(self, repository_id: str) -> dict:
+        """Recursos bloqueables de un repo (§GEAS-007).
+
+        Antes había que abrir roster.env (o la BD) para montar un
+        create_ticket con los ids completos de resource. Esto cierra el
+        hueco: la API responde lo mismo que `geas_admin.py show` sin abrir
+        la BD. Rol agent incluido (permiso resource:read).
+        """
+        if not repository_id:
+            return _err("repository_id requerido")
+        repo = self.storage.get_repository(repository_id)
+        if not repo:
+            return _err(f"Repositorio no existe: {repository_id}")
+        denied = self._authorize(repo.organization_id, "resource:read")
+        if denied:
+            return denied
+        resources = self.storage.list_resources(repository_id)
+        return _ok(
+            {
+                "repository_id": repository_id,
+                "resources": [
+                    {
+                        "id": r.id,
+                        "path": r.path,
+                        "type": r.type.value,
+                        "metadata": r.metadata,
+                    }
+                    for r in resources
+                ],
+            }
+        )
+
     def get_permissions(self) -> dict:
         """Permisos EFECTIVOS del actor que pregunta (§7).
 
@@ -865,6 +946,10 @@ class GeasMcp:
                 )
             if tool == "list_repositories":
                 return self.list_repositories(params.get("organization_id", ""))
+            if tool == "list_actors":
+                return self.list_actors(params.get("organization_id", ""))
+            if tool == "list_resources":
+                return self.list_resources(params["repository_id"])
             if tool == "get_permissions":
                 return self.get_permissions()
             if tool == "sync":
@@ -1010,8 +1095,18 @@ TOOLS = [
         "params": ["organization_id"],
     },
     {
+        "name": "list_actors",
+        "description": "Actores (users + agents) de la organización (GEAS-007)",
+        "params": ["organization_id"],
+    },
+    {
+        "name": "list_resources",
+        "description": "Recursos bloqueables de un repo (GEAS-007)",
+        "params": ["repository_id"],
+    },
+    {
         "name": "get_permissions",
-        "description": "Catálogo de permisos §7",
+        "description": "Permisos efectivos del actor que pregunta §7",
     },
 ]
 

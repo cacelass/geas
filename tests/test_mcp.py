@@ -16,6 +16,7 @@ from geas.models import (
     Organization,
     Repository,
     Resource,
+    ResourceType,
     Role,
 )
 from geas.storage import Storage
@@ -475,3 +476,82 @@ class TestOrgContextViaMcp:
         r = restringido.get_organization(org.id)
         assert r["success"] is False
         assert r["error"] == "FORBIDDEN"
+
+    # ─── GEAS-007 ────────────────────────────────────────────────────────
+
+    def test_list_actors_y_list_resources_desde_rol_agent(self, storage, org, repo):
+        from geas.mcp import TOOL_NAMES, GeasMcp
+
+        role = Role(
+            organization_id=org.id,
+            name="agente-007",
+            permissions=["user:read", "resource:read"],
+        )
+        storage.create_role(role)
+        actor = Agent(
+            id="agent-007",
+            organization_id=org.id,
+            name="agent-007",
+            provider="test",
+            model="test",
+            role_id=role.id,
+        )
+        storage.create_agent(actor)
+        assert "user:read" in DEFAULT_PERMISSIONS  # catalogo lo acepta
+
+        mcp_agent = GeasMcp(storage, actor_id=actor.id, org_id=org.id)
+
+        # registradas en el catalogo y en el despacho
+        assert {"list_actors", "list_resources"} <= TOOL_NAMES
+
+        # recursos del repo
+        rr = mcp_agent.call("list_resources", {"repository_id": repo.id})
+        assert rr["success"] is True
+        assert rr["data"]["resources"] == []
+        storage.create_resource(
+            Resource(
+                repository_id=repo.id,
+                path="agents/agents/",
+                type=ResourceType.DIRECTORY,
+            )
+        )
+        rr = mcp_agent.call("list_resources", {"repository_id": repo.id})
+        assert [x["path"] for x in rr["data"]["resources"]] == ["agents/agents/"]
+
+        # actores de la org (usuarios + agentes)
+        ar = mcp_agent.call("list_actors", {"organization_id": org.id})
+        assert ar["success"] is True
+        kinds = {a["kind"] for a in ar["data"]["actors"]}
+        assert kinds == {"agent"}
+        assert any(a["id"] == "agent-007" for a in ar["data"]["actors"])
+        # un repo inexistente da error legible
+        assert (
+            mcp_agent.call("list_resources", {"repository_id": "no-existe"})[
+                "success"
+            ]
+            is False
+        )
+
+    def test_list_actors_sin_user_read_deniega(self, storage, org):
+        from geas.mcp import GeasMcp
+        from geas.models import Agent, Role
+
+        role = Role(
+            organization_id=org.id,
+            name="solo-resources",
+            permissions=["resource:read"],
+        )
+        storage.create_role(role)
+        actor = Agent(
+            id="agent-sin-users",
+            organization_id=org.id,
+            name="agent-sin-users",
+            provider="test",
+            model="test",
+            role_id=role.id,
+        )
+        storage.create_agent(actor)
+        restringido = GeasMcp(storage, actor_id=actor.id, org_id=org.id)
+        assert restringido.call("list_actors", {"organization_id": org.id})[
+            "success"
+        ] is False
