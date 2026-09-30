@@ -362,9 +362,78 @@ class TestOrgContextViaMcp:
         assert {x["name"] for x in r["data"]["repositories"]} == {"youtube-backend"}
 
     def test_get_permissions_es_el_catalogo_7(self, mcp):
+        # GEAS-004: get_permissions devuelve los permisos del actor que
+        # pregunta (los del rol), no el catalogo completo del perfil.
         r = mcp.get_permissions()
         assert r["success"] is True
         assert set(r["data"]["permissions"]) == set(DEFAULT_PERMISSIONS)
+
+    # GEAS-004: el agente ve 14 y el manager 21, los mismos numeros que
+    # storage.get_actor_permissions y geas_admin.py show. Antes ambos veian
+    # el conjunto del perfil (25) y la ejecucion real les negaba con
+    # FORBIDDEN lo que la tool decian poder hacer.
+    def test_get_permissions_distingue_agente_de_manager(self, storage, org):
+        from geas.models import User
+
+        permisos = {
+            "agent": [
+                "ticket:read",
+                "ticket:start",
+                "ticket:complete",
+                "resource:read",
+            ],
+            "manager": [
+                "ticket:read",
+                "ticket:create",
+                "ticket:update",
+                "ticket:start",
+                "ticket:complete",
+                "resource:read",
+                "resource:lock",
+                "repository:read",
+                "user:manage",
+                "audit:read",
+                "execution:read",
+            ],
+        }
+        roles = {}
+        for nombre in ("agent", "manager"):
+            rol = Role(
+                organization_id=org.id,
+                name=nombre,
+                permissions=permisos[nombre],
+            )
+            storage.create_role(rol)
+            roles[nombre] = rol
+
+        actor_agent = Agent(
+            id="agent-X",
+            organization_id=org.id,
+            name="agente",
+            provider="test",
+            model="test",
+            role_id=roles["agent"].id,
+        )
+        storage.create_agent(actor_agent)
+        actor_manager = User(
+            id="user-X",
+            organization_id=org.id,
+            name="manager",
+            role_id=roles["manager"].id,
+        )
+        storage.create_user(actor_manager)
+
+        for actor, esperados in (
+            (actor_agent, set(permisos["agent"])),
+            (actor_manager, set(permisos["manager"])),
+        ):
+            mcp_actor = GeasMcp(storage, actor_id=actor.id, org_id=org.id)
+            r = mcp_actor.get_permissions()
+            assert r["success"] is True
+            got = set(r["data"]["permissions"])
+            assert got == esperados, (actor.id, got, esperados)
+            # Y coincide con el computo real de storage, no con el perfil.
+            assert got == storage.get_actor_permissions(actor.id, org.id)
 
     def test_dispatch_expone_las_herramientas_nuevas(self, mcp, org):
         from geas.mcp import TOOL_NAMES

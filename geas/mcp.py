@@ -37,7 +37,6 @@ from __future__ import annotations
 from typing import Any
 
 from geas.models import (
-    ALL_PERMISSIONS,
     AuditLog,
     Event,
     Execution,
@@ -621,8 +620,25 @@ class GeasMcp:
         )
 
     def get_permissions(self) -> dict:
-        """Catálogo §7 — read-only, igual que `geas permission list`."""
-        return _ok({"permissions": sorted(ALL_PERMISSIONS)})
+        """Permisos EFECTIVOS del actor que pregunta (§7).
+
+        GEAS-004: antes devolvia ALL_PERMISSIONS (el conjunto del perfil) a
+        todos los actores, de modo que un agente creia poder llamar
+        update_ticket y luego recibia FORBIDDEN. Ahora devuelve
+        storage.get_actor_permissions(actor, org): 21 al manager, 14 al
+        agente, los mismos numeros que geas_admin.py show.
+        """
+        org_id = self.org_id or (
+            self.storage.list_organizations()[0].id
+            if self.storage.list_organizations()
+            else ""
+        )
+        if not org_id:
+            return _err("No hay organizaciones")
+        permissions = sorted(
+            self.storage.get_actor_permissions(self.actor_id, org_id)
+        )
+        return _ok({"permissions": permissions})
 
     # ─── Sync ──────────────────────────────────────────────────────
 
