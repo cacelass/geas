@@ -84,6 +84,22 @@ class GeasMcp:
             {"actor_id": self.actor_id, "permission": permission},
         )
 
+    @staticmethod
+    def _safe_branch(title: str) -> str:
+        """Nombre de rama seguro: minusculas, guiones, sin caracteres ilegales.
+
+        git rechaza refnames con ':', '~', '^', ' ', '..', '*' entre otros
+        (GEAS-003 media). Antes se hacia `title.replace(' ', '-')` y un titulo
+        'GEAS-003: fix' producia 'GEAS-003:-fix', una rama que git no crea y
+        que dejaba el ticket IN_PROGRESS sin rama fisica.
+        """
+        import re
+
+        slug = title.lower().strip()
+        slug = re.sub(r"[^a-z0-9._-]+", "-", slug)
+        slug = slug.strip(".-")
+        return (slug or "ticket")[:32]
+
     # ─── Tickets ───────────────────────────────────────────────────────
 
     def get_available_tasks(self) -> dict:
@@ -177,6 +193,17 @@ class GeasMcp:
             if not self.storage.get_ticket(dep):
                 return _err(f"Dependencia no existe: {dep}")
 
+        # GEAS-003: validar que cada resource exista ANTES de guardar. Un id
+        # truncado se colaba y el fallo aparecia al reclamar, como un
+        # FOREIGN KEY constraint failed / HTTP 000. Aqui se rechaza el ticket
+        # y se dice cual es el id que no existe.
+        for res_id in resources or []:
+            if not self.storage.get_resource(res_id):
+                return _err(
+                    f"Recurso no existe: {res_id}",
+                    {"resource_id": res_id},
+                )
+
         t = Ticket(
             organization_id=org_id,
             department_id=department_id or None,
@@ -257,7 +284,7 @@ class GeasMcp:
                 },
             )
 
-        branch = f"{ticket_id[:8]}-{t.title.replace(' ', '-')[:20]}"
+        branch = f"{ticket_id[:8]}-{self._safe_branch(t.title)}"
         self.storage.start_ticket(
             ticket_id,
             commit_before=commit_before,

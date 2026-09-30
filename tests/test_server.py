@@ -68,3 +68,59 @@ def test_tool_api_requires_actor_and_dispatches(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_handler_returns_json_on_internal_error(tmp_path):
+    """GEAS-003: un fallo interno responde 500 JSON, nunca corta la conexion.
+
+    El bug era un FOREIGN KEY constraint failed en start_ticket que subia al
+    handler y el cliente veia HTTP 000 (conexion cortada sin cuerpo). Aqui se
+    fuerza un error interno (BD cerrada) y se comprueba que la respuesta es
+    JSON legible, no una conexion cortada.
+    """
+    server, _thread, org, actor = _server(tmp_path)
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        # Primero creamos un ticket por HTTP (BD viva): su id servira para
+        # llamar a get_ticket despues de cerrar la BD y provocar el SQL
+        # que falla por dentro.
+        create = Request(
+            f"{base}/api/tools/create_ticket",
+            data=b'{"title": "Para romper"}',
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Geas-Actor": actor.id,
+                "X-Geas-Organization": org.id,
+            },
+        )
+        created = json.load(urlopen(create))
+        assert created["success"] is True
+        ticket_id = created["data"]["id"]
+
+        # Cerramos la BD del servidor: cualquier tool MCP que haga SQL
+        # reventara dentro del handler.
+        server.storage.close()
+
+        request = Request(
+            f"{base}/api/tools/get_ticket",
+            data=('{"ticket_id": "' + ticket_id + '"}').encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Geas-Actor": actor.id,
+                "X-Geas-Organization": org.id,
+            },
+        )
+        try:
+            urlopen(request)
+        except HTTPError as error:
+            assert error.code == 500
+            body = json.loads(error.read())
+            assert body.get("success") is False
+            assert body.get("error") == "INTERNAL_ERROR"
+        else:
+            raise AssertionError("La API debía responder 500, no 200")
+    finally:
+        server.shutdown()
+        server.server_close()

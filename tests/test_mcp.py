@@ -106,6 +106,33 @@ class TestTicketsViaMcp:
         r = mcp.create_ticket(title="Mal", dependencies=["no-existe"])
         assert r["success"] is False
 
+    # GEAS-003: un resource que no existe se rechaza diciendo cual es, en
+    # vez de guardar el ticket y petar al reclamar con una FK.
+    def test_create_ticket_rejects_missing_resource(self, mcp, org):
+        r = mcp.create_ticket(title="Con recurso fantasma", resources=["no-existe"])
+        assert r["success"] is False
+        assert "no-existe" in r["error"]
+        # Y el id truncado de un recurso real tambien se rechaza: sin el
+        # prefijo completo la FK de resource_locks no tendria a quien apuntar.
+        r2 = mcp.create_ticket(title="Con prefijo", resources=["abc12345"])
+        assert r2["success"] is False
+        assert "abc12345" in r2["error"]
+
+    # GEAS-003 media: la rama se genera de un titulo con caracteres que git
+    # rechaza (':', '~', etc.) y el ticket quedaba IN_PROGRESS sin rama.
+    def test_start_ticket_generates_safe_branch(self, mcp, org, repo):
+        r = mcp.create_ticket(
+            title="GEAS-003: fix (urgente)", repository_id=repo.id
+        )
+        ticket_id = r["data"]["id"]
+        out = mcp.start_ticket(ticket_id, commit_before="abc")
+        assert out["success"] is True
+        branch = out["data"]["branch"]
+        assert ":" not in branch
+        assert " " not in branch
+        assert "~" not in branch
+        assert branch.startswith(ticket_id[:8])
+
 
 class TestLockViaMcp:
     """La demo de la spec §13/§41 a través de MCP."""

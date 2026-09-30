@@ -86,11 +86,30 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "INVALID_JSON"})
             return
-        result = GeasMcp(
-            self.server.storage,
-            actor_id=actor_id,
-            org_id=self.headers.get("X-Geas-Organization", ""),
-        ).call(path.removeprefix(prefix), params)
+        try:
+            result = GeasMcp(
+                self.server.storage,
+                actor_id=actor_id,
+                org_id=self.headers.get("X-Geas-Organization", ""),
+            ).call(path.removeprefix(prefix), params)
+        except Exception:  # noqa: BLE001 — intencional: el handler nunca corta
+            # GEAS-003: un fallo del handler no puede cortar la conexion sin
+            # cuerpo. El cliente (curl/urllib) ve un HTTP 000 que confunde
+            # 'el servidor se ha caido' con 'mi peticion es invalida'. Se
+            # responde 500 con un JSON legible y se deja el detalle para el
+            # log del proceso padre.
+            import traceback
+
+            traceback.print_exc()
+            self._json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "success": False,
+                    "error": "INTERNAL_ERROR",
+                    "data": {"detail": "el handler ha petado; revisa el log del servidor"},
+                },
+            )
+            return
         self._json(HTTPStatus.OK if result["success"] else HTTPStatus.FORBIDDEN, result)
 
 
