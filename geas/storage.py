@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -55,10 +57,59 @@ class Storage:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        # GEAS-005: mientras haya una transacción abierta, los `commit()` de
+        # los métodos sueltos NO cierran nada. Sin este contador, create_ticket
+        # pondría su fila y la confirmaría antes de tiempo, y el `audit_log`
+        # podría acabar afirmando un ticket que la tabla ya no tiene.
+        self._depth = 0
         self._create_tables()
 
     def close(self):
         self.conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[Storage]:
+        """Agrupa varias escrituras en UNA sola transacción (GEAS-005).
+
+        Por defecto los métodos de Storage confirman por su cuenta: el ticket,
+        su evento y su audit eran TRES transacciones distintas, así que un
+        fallo entre ellas dejaba el `audit_log` afirmando un ticket que no
+        estaba. Con este context manager las tres van juntas o no va ninguna.
+
+        BEGIN IMMEDIATE toma el lock de escritura al entrar (igual que
+        `acquire_locks`), de modo que dos escritores concurrentes se
+        serializan en vez de pisarse. Es anidable: la transacción que manda
+        es la de fuera.
+        """
+        if self._depth:
+            # Ya estamos dentro de una: manda la de fuera, no abras otra.
+            self._depth += 1
+            try:
+                yield self
+            finally:
+                self._depth -= 1
+            return
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        self._depth = 1
+        try:
+            yield self
+        except BaseException:
+            self._depth = 0
+            self.conn.rollback()
+            raise
+        else:
+            self._depth = 0
+            self.conn.commit()
+
+    def _commit(self) -> None:
+        """Confirma, salvo que haya una transacción abierta (GEAS-005).
+
+        Los métodos sueltos llaman aquí en vez de a `conn.commit()`, para que
+        metidos en `with storage.transaction():` no confirmen a medias.
+        """
+        if not self._depth:
+            self.conn.commit()
 
     def _create_tables(self):
         self.conn.executescript(SCHEMA)
@@ -86,7 +137,7 @@ class Storage:
             "profile) VALUES (?, ?, ?, ?, ?, ?)",
             (org.id, org.name, org.description, org.created_at, org.active, org.profile),
         )
-        self.conn.commit()
+        self._commit()
         return org
 
     def get_organization(self, org_id: str) -> Organization | None:
@@ -113,7 +164,7 @@ class Storage:
         cur = self.conn.execute(
             "UPDATE organizations SET profile = ? WHERE id = ?", (profile, org_id)
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def update_organization_fields(
@@ -144,7 +195,7 @@ class Storage:
         if where:
             sql += " AND (" + " OR ".join(where) + ")"
         cur = self.conn.execute(sql, [*set_params, org_id, *where_params])
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     # ─── Departments ────────────────────────────────────────────────────
@@ -163,7 +214,7 @@ class Storage:
                 dept.active,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return dept
 
     def get_department(self, dept_id: str) -> Department | None:
@@ -212,7 +263,7 @@ class Storage:
             "VALUES (?, ?, ?, ?)",
             (role.id, role.organization_id, role.name, json.dumps(role.permissions)),
         )
-        self.conn.commit()
+        self._commit()
         return role
 
     def get_role(self, role_id: str) -> Role | None:
@@ -235,7 +286,7 @@ class Storage:
             "UPDATE roles SET permissions = ? WHERE id = ?",
             (json.dumps(permissions), role_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def list_roles(self, org_id: str) -> list[Role]:
@@ -256,7 +307,7 @@ class Storage:
                 "UPDATE roles SET permissions = ? WHERE id = ?",
                 (json.dumps(role.permissions), role_id),
             )
-            self.conn.commit()
+            self._commit()
         return True
 
     # ─── Policies ───────────────────────────────────────────────────────
@@ -277,7 +328,7 @@ class Storage:
                 policy.active,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return policy
 
     def get_policy(self, policy_id: str) -> Policy | None:
@@ -337,7 +388,7 @@ class Storage:
         cur = self.conn.execute(
             f"UPDATE policies SET {', '.join(sets)} WHERE id = ?", values
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     # ─── Users ──────────────────────────────────────────────────────────
@@ -357,7 +408,7 @@ class Storage:
                 user.created_at,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return user
 
     def get_user(self, user_id: str) -> User | None:
@@ -395,7 +446,7 @@ class Storage:
                 agent.created_at,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return agent
 
     def get_agent(self, agent_id: str) -> Agent | None:
@@ -460,7 +511,7 @@ class Storage:
                 repo.active,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return repo
 
     def get_repository(self, repo_id: str) -> Repository | None:
@@ -499,7 +550,7 @@ class Storage:
         cur = self.conn.execute(
             f"UPDATE repositories SET {', '.join(sets)} WHERE id = ?", values
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def get_repository_by_name(
@@ -545,7 +596,7 @@ class Storage:
                 json.dumps(res.metadata),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return res
 
     def get_resource(self, res_id: str) -> Resource | None:
@@ -577,7 +628,7 @@ class Storage:
                 lock.last_heartbeat,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return lock
 
     def acquire_locks(
@@ -627,7 +678,7 @@ class Storage:
                             now_value,
                         ),
                     )
-            self.conn.commit()
+            self._commit()
             return True, None
         except sqlite3.Error:
             self.conn.rollback()
@@ -636,7 +687,7 @@ class Storage:
     def get_lock_for_resource(self, resource_id: str) -> ResourceLock | None:
         now = datetime.now(UTC).isoformat()
         self.conn.execute("DELETE FROM resource_locks WHERE expires_at <= ?", (now,))
-        self.conn.commit()
+        self._commit()
         row = self.conn.execute(
             "SELECT * FROM resource_locks WHERE resource_id = ? "
             "AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
@@ -646,14 +697,14 @@ class Storage:
 
     def release_lock(self, lock_id: str) -> bool:
         cur = self.conn.execute("DELETE FROM resource_locks WHERE id = ?", (lock_id,))
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def release_locks_for_ticket(self, ticket_id: str) -> int:
         cur = self.conn.execute(
             "DELETE FROM resource_locks WHERE ticket_id = ?", (ticket_id,)
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount
 
     def heartbeat_lock(self, lock_id: str, ttl_seconds: int = 7200) -> bool:
@@ -664,7 +715,7 @@ class Storage:
             "WHERE id = ? AND expires_at > ?",
             (now, expires, lock_id, now),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def expire_locks(self) -> int:
@@ -672,7 +723,7 @@ class Storage:
             "DELETE FROM resource_locks WHERE expires_at <= ?",
             (datetime.now(UTC).isoformat(),),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount
 
     # ─── Tickets ────────────────────────────────────────────────────────
@@ -710,7 +761,7 @@ class Storage:
                 ticket.commit_after,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return ticket
 
     def get_ticket(self, ticket_id: str) -> Ticket | None:
@@ -754,7 +805,7 @@ class Storage:
                 "UPDATE tickets SET status = ? WHERE id = ?",
                 (status, ticket_id),
             )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def update_ticket_fields(self, ticket_id: str, **fields: object) -> bool:
@@ -768,7 +819,7 @@ class Storage:
             f"UPDATE tickets SET {assignments} WHERE id = ?",
             (*updates.values(), ticket_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def assign_ticket(self, ticket_id: str, actor_id: str) -> bool:
@@ -777,7 +828,7 @@ class Storage:
             "WHERE id = ? AND status = 'FREE'",
             (actor_id, ticket_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def start_ticket(
@@ -803,7 +854,7 @@ class Storage:
             "WHERE id = ? AND status = 'FREE'",
             (now, commit_before, branch, actor_id or "", ticket_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def complete_ticket(
@@ -817,7 +868,7 @@ class Storage:
             "commit_after = ?, result = ? WHERE id = ?",
             (now, commit_after, result, ticket_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     # ─── TicketDependencies ─────────────────────────────────────────────
@@ -832,7 +883,7 @@ class Storage:
             "created_at) VALUES (?, ?, ?, ?)",
             (dep.id, dep.ticket_id, dep.depends_on_ticket_id, dep.created_at),
         )
-        self.conn.commit()
+        self._commit()
         return dep
 
     def would_create_cycle(self, ticket_id: str, depends_on_ticket_id: str) -> bool:
@@ -909,7 +960,7 @@ class Storage:
                 exe.result,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return exe
 
     def get_executions(self, ticket_id: str) -> list[Execution]:
@@ -929,7 +980,7 @@ class Storage:
             "UPDATE executions SET result = ?, finished_at = ? WHERE id = ?",
             (result, finished_at, execution_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def update_execution_usage(
@@ -950,7 +1001,7 @@ class Storage:
             "WHERE id = ?",
             (tokens_input, tokens_output, cost, execution_id),
         )
-        self.conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     # ─── TestResults ────────────────────────────────────────────────────
@@ -971,7 +1022,7 @@ class Storage:
                 tr.logs_reference,
             ),
         )
-        self.conn.commit()
+        self._commit()
         return tr
 
     def get_test_results(self, ticket_id: str) -> list[TestResult]:
@@ -999,7 +1050,7 @@ class Storage:
                 json.dumps(event.metadata),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return event
 
     def list_events(self, org_id: str, limit: int = 100) -> list[Event]:
@@ -1026,7 +1077,7 @@ class Storage:
                 json.dumps(audit.metadata),
             ),
         )
-        self.conn.commit()
+        self._commit()
         return audit
 
     def list_audit(self, org_id: str, limit: int = 100) -> list[AuditLog]:
@@ -1214,6 +1265,39 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp TEXT NOT NULL,
     metadata TEXT DEFAULT '{}'  -- JSON object
 );
+
+-- GEAS-005: un DELETE de un ticket SIEMPRE deja rastro en el audit_log.
+-- Antes, borrar un ticket (o que un segundo escritor pisara su página) lo
+-- dejaba sin rastro: el audit_log seguía afirmando un CREATE_TICKET que la
+-- tabla ya no tenía, y no había forma de saber qué había pasado.
+--
+-- `randomblob(16)` genera el id dentro de SQLite porque un trigger no puede
+-- llamar a Python. `actor_id` queda como 'trigger:tickets' porque el trigger
+-- no sabe QUIÉN borró; los detalles que sí sabemos (título y estado previo)
+-- van en metadata, para poder reconstruir el ticket perdido.
+CREATE TRIGGER IF NOT EXISTS tickets_delete_deja_rastro
+AFTER DELETE ON tickets
+BEGIN
+    INSERT INTO audit_log (id, actor_id, action, resource_type, resource_id,
+                           timestamp, metadata)
+    VALUES (
+        lower(hex(randomblob(16))),
+        'trigger:tickets',
+        'DELETE_TICKET',
+        'ticket',
+        OLD.id,
+        strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now'),
+        json_object(
+            'title', OLD.title,
+            'status', OLD.status,
+            'organization_id', OLD.organization_id,
+            'creator_id', OLD.creator_id,
+            'assigned_actor_id', OLD.assigned_actor_id,
+            'created_at', OLD.created_at,
+            'detalle', 'Fila eliminada de tickets; registrada por trigger (GEAS-005)'
+        )
+    );
+END;
 """
 
 

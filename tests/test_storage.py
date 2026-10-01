@@ -595,3 +595,134 @@ def test_policies_org_sin_departamento(storage, org):
         storage.get_policy_by_name(org.id, "global", department_id="d-nonexistent")
         is None
     )
+
+
+# ─── GEAS-005: transaccion y rastro de borrados ─────────────────────────────
+# El incidente que abrio este ticket: 10 tickets desaparecieron de la tabla y
+# el audit_log seguia afirmando sus CREATE_TICKET, sin dejar ni una linea que
+# explicara que paso. Estos tests cierran las dos vias por las que se perdia
+# una fila: creacion a medias (transaccion) y borrado sin rastro (trigger).
+
+
+def test_la_transaccion_confirma_todo_junto(storage, org):
+    """Dentro de transaction(), un fallo no deja ninguna fila a medias."""
+    t = Ticket(organization_id=org.id, title="Se queda", creator_id="a")
+
+    with pytest.raises(RuntimeError, match="a mitad"), storage.transaction():
+        storage.create_ticket(t)
+        raise RuntimeError("falla a mitad")
+
+    assert storage.get_ticket(t.id) is None
+    assert storage.conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
+
+
+def test_la_transaccion_confirma_si_no_hay_fallo(storage, org):
+    """Y si no hay fallo, entra todo y el _depth vuelve a cero."""
+    t = Ticket(organization_id=org.id, title="Entra", creator_id="a")
+    with storage.transaction():
+        storage.create_ticket(t)
+        storage.create_audit(
+            AuditLog(actor_id="a", action="CREATE_TICKET", resource_type="ticket",
+                     resource_id=t.id)
+        )
+
+    assert storage.get_ticket(t.id) is not None
+    assert storage._depth == 0
+    # Ya no hay transaccion abierta: un commit suelto vuelve a confirmar.
+    storage._commit()
+    assert storage.get_ticket(t.id) is not None
+
+
+def test_transacciones_anidadas_no_abren_dos_transacciones(storage, org):
+    """La de fuera manda: anidar no intenta un segundo BEGIN."""
+    assert storage._depth == 0
+    with storage.transaction():
+        assert storage._depth == 1
+        with storage.transaction():
+            assert storage._depth == 2
+        # Al salir la de dentro, la de sigue viva (no se confirma a medias).
+        assert storage._depth == 1
+    assert storage._depth == 0
+
+
+def test_un_rollback_dentro_de_la_transaccion_propag(storage, org):
+    """Un rollback explicito tampoco debe prometer nada."""
+    with pytest.raises(RuntimeError, match="huerfano"), storage.transaction():
+        storage.create_ticket(Ticket(organization_id=org.id, title="Huerfano"))
+        storage.conn.rollback()
+        raise RuntimeError("huerfano")
+
+    assert storage._depth == 0
+    assert storage.conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
+
+
+def test_borrar_un_ticket_deja_rastro_en_el_audit_log(storage, org):
+    """GEAS-005: el trigger convierte un DELETE en una linea de audit."""
+    t = Ticket(organization_id=org.id, title="Se puede borrar", creator_id="a")
+    storage.create_ticket(t)
+
+    storage.conn.execute("DELETE FROM tickets WHERE id = ?", (t.id,))
+    storage._commit()
+
+    row = storage.conn.execute(
+        "SELECT action, resource_type, resource_id, actor_id, metadata "
+        "FROM audit_log WHERE action = 'DELETE_TICKET'"
+    ).fetchone()
+    assert row is not None
+    assert row["resource_id"] == t.id
+    assert row["resource_type"] == "ticket"
+    # El trigger no sabe quien borro; lo dice en vez de inventar un actor.
+    assert row["actor_id"] == "trigger:tickets"
+    # Y guarda lo que hacia falta para reconstruir el ticket.
+    assert '"Se puede borrar"' in row["metadata"]
+
+
+def test_el_trigger_no_inventa_borrados_que_no_pasan(storage, org):
+    """Sin DELETE no hay lineas DELETE_TICKET: el audit no se rellena solo."""
+    storage.create_ticket(Ticket(organization_id=org.id, title="Se queda", creator_id="a"))
+
+    assert storage.conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE_TICKET'"
+    ).fetchone()[0] == 0
+
+
+def test_el_audit_log_no_afirma_tickets_que_la_tabla_no_tiene(storage, org):
+    """La invariante de GEAS-005, comprobable: cero auditorias huerfanas."""
+    t = Ticket(organization_id=org.id, title="Auditado", creator_id="a")
+    storage.create_ticket(t)
+    storage.create_audit(
+        AuditLog(actor_id="a", action="CREATE_TICKET", resource_type="ticket",
+                 resource_id=t.id)
+    )
+
+    def huerfanos():
+        return storage.conn.execute(
+            "SELECT COUNT(*) FROM audit_log a WHERE a.action = 'CREATE_TICKET' "
+            "AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.id = a.resource_id)"
+        ).fetchone()[0]
+
+    assert huerfanos() == 0
+
+    # Si el ticket se va, el audit lo declara (DELETE_TICKET), no lo desmiente.
+    storage.conn.execute("DELETE FROM tickets WHERE id = ?", (t.id,))
+    storage._commit()
+    assert storage.get_ticket(t.id) is None
+    assert huerfanos() == 1
+    assert storage.conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE_TICKET' AND resource_id = ?",
+        (t.id,),
+    ).fetchone()[0] == 1
+
+
+def test_el_trigger_ya_existe_en_una_base_antigua(storage, org):
+    """Una base creada antes del trigger lo recibe al abrirse (CREATE IF NOT EXISTS)."""
+    storage.create_ticket(Ticket(organization_id=org.id, title="Viejo", creator_id="a"))
+    storage.conn.execute("DROP TRIGGER IF EXISTS tickets_delete_deja_rastro")
+    storage._commit()
+
+    storage._create_tables()  # lo que hace Storage.__init__ al abrir la BD
+
+    assert storage.conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+        "AND name='tickets_delete_deja_rastro'"
+    ).fetchone()[0] == 1

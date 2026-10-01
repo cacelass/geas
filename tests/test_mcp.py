@@ -555,3 +555,83 @@ class TestOrgContextViaMcp:
         assert restringido.call("list_actors", {"organization_id": org.id})[
             "success"
         ] is False
+
+
+# ─── GEAS-005: crear un ticket es atomico ───────────────────────────────────
+# create_ticket escribia en cuatro `commit()` sueltos (ticket, dependencias,
+# evento, audit). Con eso, un fallo entre medias dejaba el audit_log afirmando
+# un CREATE_TICKET cuyo ticket no existia. Ahora van en una transaccion.
+
+
+class TestCrearTicketEsAtomico:
+    def test_un_ticket_nuevo_deja_ticket_evento_y_audit(self, mcp, storage):
+        r = mcp.create_ticket(title="Atomico")
+        ticket_id = r["data"]["id"]
+
+        assert storage.get_ticket(ticket_id) is not None
+        for sql, params in [
+            ("SELECT COUNT(*) FROM audit_log WHERE action='CREATE_TICKET' AND resource_id=?",
+             (ticket_id,)),
+            ("SELECT COUNT(*) FROM events WHERE event_type='TICKET_CREATED' AND resource_id=?",
+             (ticket_id,)),
+        ]:
+            assert storage.conn.execute(sql, params).fetchone()[0] == 1
+
+    def test_si_el_audit_falla_no_queda_ticket_ni_evento(self, mcp, storage):
+        """El fallo se propaga y no deja ni media fila (GEAS-005)."""
+        antes_tickets = storage.conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+        antes_audits = storage.conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='CREATE_TICKET'"
+        ).fetchone()[0]
+        antes_eventos = storage.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='TICKET_CREATED'"
+        ).fetchone()[0]
+
+        def audit_que_peta(*args, **kwargs):
+            raise RuntimeError("disco lleno")
+
+        storage.create_audit = audit_que_peta
+        with pytest.raises(RuntimeError, match="disco lleno"):
+            mcp.create_ticket(title="No debe sobrevivir")
+
+        assert storage.conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == antes_tickets
+        assert storage.conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='CREATE_TICKET'"
+        ).fetchone()[0] == antes_audits
+        assert storage.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='TICKET_CREATED'"
+        ).fetchone()[0] == antes_eventos
+
+        # Y la conexion sigue viva para el siguiente ticket (no se dejo suelta).
+        del storage.create_audit
+        r = mcp.create_ticket(title="El siguiente si")
+        assert r["success"] is True
+        assert storage.get_ticket(r["data"]["id"]) is not None
+
+    def test_si_una_dependencia_falla_no_queda_el_ticket(self, mcp, storage):
+        """Las dependencias van tambien dentro de la misma transaccion."""
+        # La dependencia tiene que existir de verdad: create_ticket la valida
+        # antes de escribir, y si no existe ni se llega a tocar la transaccion.
+        previa = mcp.create_ticket(title="Dependencia real")["data"]["id"]
+
+        def dependencia_que_peta(*args, **kwargs):
+            raise RuntimeError("FK fallo")
+
+        storage.create_dependency = dependencia_que_peta
+        with pytest.raises(RuntimeError, match="FK fallo"):
+            mcp.create_ticket(title="Con dependencia rota", dependencies=[previa])
+
+        assert storage.conn.execute(
+            "SELECT COUNT(*) FROM tickets WHERE title = 'Con dependencia rota'"
+        ).fetchone()[0] == 0
+
+    def test_el_audit_log_no_afirma_tickets_que_no_existen(self, mcp, storage):
+        """Invariante de GEAS-005 sobre el camino real de la API."""
+        for i in range(5):
+            mcp.create_ticket(title=f"Ticket {i}")
+
+        huerfanos = storage.conn.execute(
+            "SELECT a.resource_id FROM audit_log a WHERE a.action='CREATE_TICKET' "
+            "AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.id = a.resource_id)"
+        ).fetchall()
+        assert [row["resource_id"] for row in huerfanos] == []

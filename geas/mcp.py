@@ -214,33 +214,39 @@ class GeasMcp:
             dependencies=dependencies or [],
             creator_id=self.actor_id,
         )
-        self.storage.create_ticket(t)
+        # GEAS-005: ticket, dependencias, evento y audit van en UNA sola
+        # transaccion. Antes eran cuatro `commit()` sueltos: si fallaba el
+        # tercero (el evento), el ticket ya estaba confirmado en su propia
+        # transaccion y el audit no llegaba a escribirse, dejando filas a medias.
+        # Ahora entra todo o no entra nada.
+        with self.storage.transaction():
+            self.storage.create_ticket(t)
 
-        for dep in dependencies or []:
-            self.storage.create_dependency(
-                TicketDependency(
-                    ticket_id=t.id,
-                    depends_on_ticket_id=dep,
+            for dep in dependencies or []:
+                self.storage.create_dependency(
+                    TicketDependency(
+                        ticket_id=t.id,
+                        depends_on_ticket_id=dep,
+                    )
+                )
+
+            self.storage.create_event(
+                Event(
+                    event_type="TICKET_CREATED",
+                    organization_id=org_id,
+                    actor_id=self.actor_id,
+                    resource_type="ticket",
+                    resource_id=t.id,
                 )
             )
-
-        self.storage.create_event(
-            Event(
-                event_type="TICKET_CREATED",
-                organization_id=org_id,
-                actor_id=self.actor_id,
-                resource_type="ticket",
-                resource_id=t.id,
+            self.storage.create_audit(
+                AuditLog(
+                    actor_id=self.actor_id,
+                    action="CREATE_TICKET",
+                    resource_type="ticket",
+                    resource_id=t.id,
+                )
             )
-        )
-        self.storage.create_audit(
-            AuditLog(
-                actor_id=self.actor_id,
-                action="CREATE_TICKET",
-                resource_type="ticket",
-                resource_id=t.id,
-            )
-        )
         return _ok({"id": t.id, "title": t.title, "status": t.status.value})
 
     def update_ticket(self, ticket_id: str, **fields: Any) -> dict:
@@ -334,20 +340,23 @@ class GeasMcp:
         denied = self._authorize(t.organization_id, "resource:unlock")
         if denied:
             return denied
-        self.storage.complete_ticket(
-            ticket_id, commit_after=commit_after, result=result
-        )
-        released = self.storage.release_locks_for_ticket(ticket_id)
-        self.storage.create_event(
-            Event(
-                event_type="TICKET_COMPLETED",
-                organization_id=t.organization_id,
-                actor_id=self.actor_id,
-                resource_type="ticket",
-                resource_id=ticket_id,
-                metadata={"commit_after": commit_after, "locks_released": released},
+        # GEAS-005: mismo motivo que en create_ticket: el cambio de estado, la
+        # liberacion de locks y el evento van juntos o no va ninguno.
+        with self.storage.transaction():
+            self.storage.complete_ticket(
+                ticket_id, commit_after=commit_after, result=result
             )
-        )
+            released = self.storage.release_locks_for_ticket(ticket_id)
+            self.storage.create_event(
+                Event(
+                    event_type="TICKET_COMPLETED",
+                    organization_id=t.organization_id,
+                    actor_id=self.actor_id,
+                    resource_type="ticket",
+                    resource_id=ticket_id,
+                    metadata={"commit_after": commit_after, "locks_released": released},
+                )
+            )
         return _ok({"id": ticket_id, "status": "DONE", "locks_released": released})
 
     def cancel_ticket(self, ticket_id: str) -> dict:
@@ -357,17 +366,19 @@ class GeasMcp:
         denied = self._authorize(t.organization_id, "ticket:update")
         if denied:
             return denied
-        self.storage.update_ticket_status(ticket_id, "CANCELLED")
-        released = self.storage.release_locks_for_ticket(ticket_id)
-        self.storage.create_event(
-            Event(
-                event_type="TICKET_CANCELLED",
-                organization_id=t.organization_id,
-                actor_id=self.actor_id,
-                resource_type="ticket",
-                resource_id=ticket_id,
+        # GEAS-005: estado, locks y evento en una sola transaccion.
+        with self.storage.transaction():
+            self.storage.update_ticket_status(ticket_id, "CANCELLED")
+            released = self.storage.release_locks_for_ticket(ticket_id)
+            self.storage.create_event(
+                Event(
+                    event_type="TICKET_CANCELLED",
+                    organization_id=t.organization_id,
+                    actor_id=self.actor_id,
+                    resource_type="ticket",
+                    resource_id=ticket_id,
+                )
             )
-        )
         return _ok({"id": ticket_id, "status": "CANCELLED", "locks_released": released})
 
     def get_dependencies(self, ticket_id: str) -> dict:
