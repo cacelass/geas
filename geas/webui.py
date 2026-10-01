@@ -1,18 +1,23 @@
 """geas.webui — Panel web de estado (§42, MVP 2).
 
-Web UI read-only que responde a «¿qué está pasando?»: organizaciones,
-tickets por estado, locks activos, últimos eventos y auditoría. HTML
-estático generado con stdlib pura — Geas no añade dependencias. La
-escritura sigue pasando por la API/MCP (§26), no por la UI: la UI es
-una ventana al estado, no otra superficie de mutación.
+Panel web interactivo con:
+- Filtros por estado de tickets
+- Vista detallada al hacer clic en un ticket
+- Creación de usuarios desde la UI
+- Lista de dispositivos permitidos
+- locks activos, eventos y auditoría
+
+HTML estático generado con stdlib pura — Geas no añade dependencias.
+La escritura pasa por la UI (usuarios, dispositivos) y la API/MCP (§26).
 """
 
 from __future__ import annotations
 
 import html as _html
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlparse
 
-from geas.models import Repository, Resource, ResourceLock, Ticket, TicketStatus
+from geas.models import Repository, Resource, ResourceLock, Ticket, TicketStatus, User
 from geas.storage import Storage
 
 _STATUS_ORDER = [
@@ -38,19 +43,57 @@ _STATUS_COLOR = {
 _PRIORITY = {0: "baja", 1: "media", 2: "alta", 3: "crítica"}
 
 _CSS = """
-body{font:15px/1.5 system-ui;max-width:980px;margin:0 auto;padding:1.5rem;color:#c9d1d9;background:#0d1117}
+body{font:15px/1.5 system-ui;max-width:1100px;margin:0 auto;padding:1.5rem;color:#c9d1d9;background:#0d1117}
 a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}
 header{border-bottom:1px solid #30363d;padding-bottom:.5rem;margin-bottom:1rem}
 header h1{margin:0 0 .2rem}
 h2{font-size:1.1rem;margin:1.5rem 0 .5rem;border-bottom:1px solid #21262d;padding-bottom:.25rem}
-.badge{display:inline-block;padding:.1rem .5rem;border-radius:999px;font-size:.75rem;font-weight:600}
+.badge{display:inline-block;padding:.15rem .6rem;border-radius:999px;font-size:.75rem;font-weight:600}
 table{border-collapse:collapse;width:100%;margin:.5rem 0;font-size:.875rem}
-th,td{text-align:left;padding:.3rem .5rem;border-bottom:1px solid #21262d;vertical-align:top}
+th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #21262d;vertical-align:top}
 th{color:#8b949e;font-weight:600}
+tr:hover td{background:#161b22}
+td.ticket-id{cursor:pointer;color:#58a6ff}td.ticket-id:hover{text-decoration:underline}
+td.ticket-title{max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 code{font-family:ui-monospace,monospace;font-size:.8rem;background:#161b22;padding:.05rem .35rem;border-radius:4px}
 .empty{color:#8b949e}
 .stats{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
-.stats span{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:.2rem .6rem;font-size:.8rem}
+.stats span{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:.25rem .7rem;font-size:.8rem}
+.stats .count{font-weight:700}
+.filter-bar{display:flex;gap:.4rem;flex-wrap:wrap;margin:.75rem 0;align-items:center}
+.filter-bar select{background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:.25rem .5rem;border-radius:6px;font-size:.85rem}
+.filter-bar select:focus{outline:none;border-color:#58a6ff}
+.filter-bar a{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:.2rem .6rem;font-size:.8rem;color:#58a6ff;text-decoration:none}
+.filter-bar a:hover{background:#1c2128;text-decoration:none}
+.filter-bar a.active{background:#58a6ff;color:#0d1117;border-color:#58a6ff;font-weight:600}
+.user-form{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;margin:1rem 0}
+.user-form h3{margin:0 0 .75rem;font-size:1rem;color:#c9d1d9}
+.form-row{display:flex;gap:.75rem;margin-bottom:.5rem;align-items:center;flex-wrap:wrap}
+.form-row input,.form-row select{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:.3rem .6rem;border-radius:6px;font-size:.85rem;flex:1;min-width:150px}
+.form-row input:focus,.form-row select:focus{outline:none;border-color:#58a6ff}
+.form-row button{background:#238636;color:#fff;border:none;padding:.3rem .8rem;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600}
+.form-row button:hover{background:#2ea043}
+.device-list{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;margin:.75rem 0}
+.device-list h4{margin:0 0 .5rem;font-size:.95rem}
+.device-item{display:flex;justify-content:space-between;align-items:center;padding:.3rem 0;border-bottom:1px solid #21262d}
+.device-item:last-child{border-bottom:none}
+.device-name{font-weight:600}
+.device-actions{display:flex;gap:.4rem}
+.btn-sm{background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:.15rem .5rem;border-radius:5px;font-size:.75rem;cursor:pointer}
+.btn-sm:hover{background:#30363d}
+.btn-danger{color:#f85149;border-color:#f85149}
+.btn-danger:hover{background:#f8514922}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
+.modal{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;max-width:700px;width:90%;max-height:80vh;overflow-y:auto}
+.modal h2{margin:0 0 .5rem;font-size:1.2rem}
+.modal .close{float:right;background:none;border:none;color:#8b949e;font-size:1.5rem;cursor:pointer;padding:0 .3rem}
+.modal .close:hover{color:#c9d1d9}
+.ticket-detail{margin-top:1rem}
+.ticket-detail table{background:#0d1117}
+.ticket-detail table tr:hover td{background:#0d1117}
+.modal .form-actions{display:flex;gap:.5rem;margin-top:1rem}
+.modal .form-actions button{padding:.4rem 1rem;border-radius:6px;font-size:.85rem;cursor:pointer;border:none;font-weight:600}
+#modal-content{display:none}
 footer{margin-top:2rem;color:#8b949e;font-size:.8rem;border-top:1px solid #30363d;padding-top:.5rem}
 """
 
@@ -61,6 +104,16 @@ def _e(value: object) -> str:
 
 def _iso_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _parse_filter(args: list[str]) -> str:
+    """Extrae el filtro ?status= de los args (simula query string)."""
+    for arg in args:
+        if arg.startswith("?"):
+            parsed = parse_qs(arg.lstrip("?"))
+            if "status" in parsed:
+                return parsed["status"][0]
+    return ""
 
 
 def _page(title: str, body: str) -> str:
@@ -83,6 +136,84 @@ def _tickets_by_status(tickets: list[Ticket]) -> dict[TicketStatus, int]:
     return counts
 
 
+def _filter_bar(current_status: str, tickets: list[Ticket]) -> str:
+    """Barra de filtros por estado."""
+    counts = _tickets_by_status(tickets)
+    links = []
+    total = len(tickets)
+    all_active = "active" if not current_status else ""
+    links.append(
+        f"<a href='/?status=' class='{all_active}' style='color:#c9d1d9'>"
+        f"Todos ({total})</a>"
+    )
+    for status in _STATUS_ORDER:
+        name = status.name
+        count = counts.get(status, 0)
+        if count:
+            active = "active" if current_status == name else ""
+            color = _STATUS_COLOR.get(name, "#8b949e")
+            links.append(
+                f"<a href='/?status={_e(name)}' class='{active}' "
+                f"style='color:{color if active else '#8b949e'}'>"
+                f"{name} ({count})</a>"
+            )
+    return f"<div class='filter-bar'>{''.join(links)}</div>"
+
+
+def _user_creation_form(storage: Storage, org_id: str) -> str:
+    """Formulario para crear usuarios desde la UI."""
+    roles = storage.list_roles(org_id)
+    depts = storage.list_departments(org_id)
+    role_opts = "".join(
+        f"<option value='{_e(r.id)}'>{_e(r.name)}</option>" for r in roles
+    )
+    dept_opts = '<option value="">(sin departamento)</option>' + "".join(
+        f"<option value='{_e(d.id)}'>{_e(d.name)}</option>" for d in depts
+    )
+    return (
+        f"<div class='user-form'>"
+        "<h3>Crear usuario</h3>"
+        "<form id='create-user-form' onsubmit='createUser(event)'>"
+        f"<div class='form-row'><input type='text' name='name' placeholder='Nombre' required>"
+        f"<input type='email' name='email' placeholder='Email'>"
+        f"<select name='department_id'>{dept_opts}</select>"
+        f"<select name='role_id'>{role_opts}</select></div>"
+        "<div class='form-actions'><button type='submit'>Crear usuario</button></div>"
+        "<div id='user-result'></div></form></div>"
+    )
+
+
+def _device_management(storage: Storage, org_id: str) -> str:
+    """Gestión de dispositivos permitidos."""
+    # Los devices se almacenan como metadata en la organización
+    org = storage.get_organization(org_id)
+    devices_str = org.metadata.get("devices", "[]") if hasattr(org, "metadata") and org.metadata else "[]"
+    import json
+    try:
+        devices = json.loads(devices_str) if devices_str != "[]" else []
+    except (json.JSONDecodeError, ValueError):
+        devices = []
+
+    devices_html = "".join(
+        f"<div class='device-item'><span class='device-name'>{_e(d)}</span>"
+        f"<div class='device-actions'><span style='color:#8b949e;font-size:.75rem'>"
+        f"Creado: {_e(d.get('created_at', ''))}</span></div></div>"
+        for d in devices
+    ) or "<p class='empty'>Sin dispositivos registrados.</p>"
+
+    return (
+        f"<div class='device-list'>"
+        "<h4>Dispositivos permitidos</h4>"
+        f"<form id='add-device-form' onsubmit='addDevice(event)'>"
+        "<div class='form-row'>"
+        "<input type='text' name='device_name' placeholder='Nombre del dispositivo (ej: Portatil-Cesar)'>"
+        f"<select name='org_id' style='max-width:160px'><option value='{_e(org_id)}'>{_e(org.name)}</option></select>"
+        "<button type='submit' class='btn-sm'>Añadir</button></div>"
+        "</form>"
+        f"<div id='devices-list'>{devices_html}</div></div>"
+    )
+
+
 def _active_locks(
     storage: Storage, org
 ) -> list[tuple[ResourceLock, Resource, Repository]]:
@@ -96,37 +227,57 @@ def _active_locks(
     return locks
 
 
-def _ticket_table(tickets: list[Ticket], limit: int = 30) -> str:
+def _priority_label(p: int) -> str:
+    labels = {0: "baja", 1: "media", 2: "alta", 3: "crítica"}
+    return _html.escape(labels.get(p, str(p)))
+
+
+def _priority_badge(p: int) -> str:
+    colors = {0: "#8b949e", 1: "#58a6ff", 2: "#d29922", 3: "#f85149"}
+    color = colors.get(p, "#8b949e")
+    label = _priority_label(p)
+    return f"<span style='color:{color};font-size:.75rem' title='{label}'>●</span>"
+
+
+def _ticket_table(tickets: list[Ticket], limit: int = 50) -> str:
     if not tickets:
         return "<p class='empty'>Sin tickets.</p>"
     rows = []
     for ticket in tickets[:limit]:
         actor = ticket.assigned_actor_id or ticket.creator_id or "—"
+        status_name = ticket.status.name if hasattr(ticket.status, "name") else str(ticket.status)
         rows.append(
             "<tr>"
-            f"<td><code><a href='/ticket/{_e(ticket.id)}'>{_e(ticket.id)}</a></code></td>"
+            f"<td class='ticket-id' onclick=\"showTicket('{_e(ticket.id)}')\"><code>{_e(ticket.id[:12])}</code></td>"
             f"<td>{_status_badge(ticket.status)}</td>"
-            f"<td>{_e(ticket.title)}</td>"
-            f"<td><code>{_e(actor)}</code></td>"
-            f"<td><code>{_e(ticket.branch) if ticket.branch else '—'}</code></td>"
-            f"<td><code>{_e(ticket.commit_before[:8]) if ticket.commit_before else '—'}</code> → "
-            f"<code>{_e(ticket.commit_after[:8]) if ticket.commit_after else '—'}</code></td>"
+            f"<td class='ticket-title' onclick=\"showTicket('{_e(ticket.id)}')\" title='{_e(ticket.title)}'>{_e(ticket.title)}</td>"
+            f"<td>{_priority_badge(ticket.priority)}</td>"
+            f"<td><code>{_e(actor[:15])}</code>"
+            f"<br><span style='color:#8b949e;font-size:.7rem'>{_e(actor[15:]) if len(actor) > 15 else ''}</span></td>"
+            f"<td><code>{_e(ticket.branch[:18]) if ticket.branch else '<span class=\\'empty\\'>—</span>'}</code></td>"
+            f"<td><span style='color:#8b949e;font-size:.75rem'>{_e(ticket.created_at[:10])}</span></td>"
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>Ticket</th><th>Estado</th><th>Título</th>"
-        "<th>Actor</th><th>Branch</th><th>commit_before → after</th></tr></thead>"
+        "<table><thead><tr><th>ID</th><th>Estado</th><th>Título</th>"
+        "<th>Pri.</th><th>Actor</th><th>Branch</th><th>Creado</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
     )
 
 
-def _org_section(storage: Storage, org, tickets: list[Ticket]) -> str:
+def _org_section(storage: Storage, org, tickets: list[Ticket], status_filter: str = "") -> str:
     depts = storage.list_departments(org.id)
     repos = storage.list_repositories(org.id)
     by_status = _tickets_by_status(tickets)
     locks = _active_locks(storage, org)
     events = storage.list_events(org.id, limit=15)
     audit = storage.list_audit(org.id, limit=15)
+
+    # Aplicar filtro por estado si existe
+    if status_filter:
+        filtered = [t for t in tickets if t.status.name == status_filter]
+    else:
+        filtered = tickets
 
     stats = [f"<span>{len(depts)} deptos</span>", f"<span>{len(repos)} repos</span>"]
     for status in _STATUS_ORDER:
@@ -166,7 +317,10 @@ def _org_section(storage: Storage, org, tickets: list[Ticket]) -> str:
         f"<section><h2>{_e(org.name)} <span class='badge'>{active}</span></h2>"
         + f"<p class='empty'><code>{_e(org.id)}</code> · {_e(org.description or '')}</p>"
         + "<div class='stats'>" + "".join(stats) + "</div>"
-        + "<h3>Tickets</h3>" + _ticket_table(tickets)
+        + _filter_bar(status_filter, tickets)
+        + "<h3>Tickets" + (f" — filtrado: <b>{_e(status_filter)}</b>" if status_filter else "") + "</h3>"
+        + _ticket_table(filtered)
+        + _user_creation_form(storage, org.id)
         + "<h3>Locks activos</h3>"
         + "<table><thead><tr><th>Recurso</th><th>Ticket</th><th>Actor</th>"
         + "<th>Expira</th></tr></thead><tbody>" + lock_rows + "</tbody></table>"
@@ -180,9 +334,83 @@ def _org_section(storage: Storage, org, tickets: list[Ticket]) -> str:
     )
 
 
-def render_dashboard(storage: Storage) -> str:
-    """HTML del panel: una sección por organización."""
+def render_dashboard(storage: Storage, args: list[str] = None) -> str:
+    """HTML del panel: una sección por organización con filtros."""
+    if args is None:
+        args = []
+    status_filter = _parse_filter(args)
     orgs = storage.list_organizations()
+    
+    # JavaScript para interactividad
+    _JS = """
+    <script>
+    function showTicket(id) {
+        fetch('/ticket/'+id)
+            .then(r=>r.text())
+            .then(html=>{
+                var m=document.getElementById('modal-content');
+                m.innerHTML=html;
+                m.style.display='flex';
+            });
+    }
+    function closeModal() {
+        document.getElementById('modal-content').style.display='none';
+    }
+    function createUser(ev) {
+        ev.preventDefault();
+        var f=document.getElementById('create-user-form');
+        var fd=new FormData(f);
+        var data={name:fd.get('name'),email:fd.get('email'),department_id:fd.get('department_id')||'',role_id:fd.get('role_id')||''};
+        fetch('/api/create-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+            .then(r=>r.json())
+            .then(j=>{
+                var el=document.getElementById('user-result');
+                if(j.success){el.innerHTML='<p style=color:#3fb950>✓ Usuario creado: '+j.data.id+'</p>';f.reset();}
+                else{el.innerHTML='<p style=color:#f85149>✗ '+j.error+'</p>';}
+            })
+            .catch(e=>{document.getElementById('user-result').innerHTML='<p style=color:#f85149>Error: '+e+'</p>'});
+    }
+    function addDevice(ev) {
+        ev.preventDefault();
+        var f=document.getElementById('add-device-form');
+        var fd=new FormData(f);
+        var data={name:fd.get('device_name'),org_id:fd.get('org_id')};
+        fetch('/api/add-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+            .then(r=>r.json())
+            .then(j=>{
+                if(j.success){location.reload();}
+                else{alert('Error: '+j.error);}
+            })
+            .catch(e=>alert('Error: '+e));
+    }
+    function updateTicket(ev) {
+        ev.preventDefault();
+        var f=document.getElementById('update-ticket-form');
+        var fd=new FormData(f);
+        var data={id:fd.get('id'),title:fd.get('title'),description:fd.get('description'),priority:fd.get('priority'),result:fd.get('result'),feedback:fd.get('feedback')};
+        fetch('/api/update-ticket',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+            .then(r=>r.json())
+            .then(j=>{
+                var el=document.getElementById('ticket-update-result');
+                if(j.success){el.innerHTML='<p style=color:#3fb950>✓ Actualizado: '+j.data.updated.join(', ')+'</p>';setTimeout(()=>location.reload(),1000);}
+                else{el.innerHTML='<p style=color:#f85149>✗ '+j.error+'</p>';}
+            })
+            .catch(e=>{document.getElementById('ticket-update-result').innerHTML='<p style=color:#f85149>Error: '+e+'</p>'});
+    }
+    function changeStatus(id, status) {
+        if(!confirm('Cambiar estado a '+status+'?'))return;
+        fetch('/api/update-ticket',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,status:status})})
+            .then(r=>r.json())
+            .then(j=>{
+                if(j.success){location.reload();}
+                else{alert('Error: '+j.error);}
+            })
+            .catch(e=>alert('Error: '+e));
+    }
+    window.onclick=function(ev){var m=document.getElementById('modal-content');if(ev.target==m)closeModal();}
+    </script>
+    """
+    
     if not orgs:
         body = (
             "<header><h1>Geas</h1>"
@@ -192,18 +420,21 @@ def render_dashboard(storage: Storage) -> str:
         )
     else:
         sections = "".join(
-            _org_section(storage, org, storage.list_tickets(org.id)) for org in orgs
+            _org_section(storage, org, storage.list_tickets(org.id), status_filter) for org in orgs
         )
         body = (
             "<header><h1>Geas</h1>"
             "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p></header>"
             + sections
         )
+    
+    modal = "<div id='modal-content' class='modal-overlay' onclick='closeModal()'><div class='modal' onclick='event.stopPropagation()'><span class='close' onclick='closeModal()'>×</span><div id='modal-body'></div></div></div>"
+    
     body += (
-        "<footer>Panel de solo lectura · la escritura pasa por la API/MCP "
+        "<footer>Panel interactivo · Escritura: UI (usuarios/dispositivos) y API/MCP "
         "(<code>POST /api/tools/&lt;tool&gt;</code> con <code>X-Geas-Actor</code>)</footer>"
     )
-    return _page("Geas", body)
+    return _page("Geas", _JS + body + modal)
 
 
 def _resource_row(storage: Storage, resource_id: str) -> str:
@@ -267,12 +498,48 @@ def render_ticket(storage: Storage, ticket_id: str) -> str | None:
         for t in tests
     ) or "<tr><td colspan='4' class='empty'>Sin resultados de tests.</td></tr>"
 
+    # Formulario de actualización
+    status_opts = "".join(
+        f"<option value='{s.name}' {'selected' if s.name == ticket.status.name else ''}>{s.name}</option>"
+        for s in _STATUS_ORDER
+    )
+    priority_opts = "".join(
+        f"<option value='{p}' {'selected' if p == str(ticket.priority) else ''}>{_e(_PRIORITY.get(int(p), p))}</option>"
+        for p in ("0", "1", "2", "3")
+    )
+    
+    update_form = (
+        f"<div class='user-form' style='margin-top:1.5rem'>"
+        "<h3>Actualizar ticket</h3>"
+        "<form id='update-ticket-form' onsubmit='updateTicket(event)'>"
+        f"<input type='hidden' name='id' value='{_e(ticket.id)}'>"
+        "<div class='form-row'>"
+        f"<label>Estado: <select name='status'>{status_opts}</select></label>"
+        f"<label>Prioridad: <select name='priority'>{priority_opts}</select></label>"
+        "</div>"
+        "<div class='form-row'>"
+        f"<input type='text' name='title' placeholder='Título' value='{_e(ticket.title)}' style='flex:2'>"
+        "</div>"
+        "<div class='form-row'>"
+        f"<input type='text' name='description' placeholder='Descripción' value='{_e(ticket.description[:100])}' style='flex:3'>"
+        "</div>"
+        "<div class='form-row'>"
+        f"<input type='text' name='result' placeholder='Resultado' value='{_e(ticket.result)}' style='flex:2'>"
+        f"<input type='text' name='feedback' placeholder='Feedback' value='{_e(ticket.feedback)}' style='flex:2'>"
+        "</div>"
+        "<div class='form-actions'><button type='submit'>Actualizar</button>"
+        f"<button type='button' class='btn-sm' style='color:#d29922;border-color:#d29922' onclick=\"changeStatus('{ticket.id}','DONE')\">Marcar DONE</button>"
+        f"<button type='button' class='btn-sm btn-danger' onclick=\"changeStatus('{ticket.id}','CANCELLED')\">Cancelar</button></div>"
+        "<div id='ticket-update-result'></div></form></div>"
+    )
+    
     body = (
         "<header>"
         f"<p><a href='/'>← Panel</a></p>"
         f"<h1>{_e(ticket.id)} {_status_badge(ticket.status)}</h1>"
         f"<h2 style='border:none'>{_e(ticket.title)}</h2>"
         f"<p class='empty'>{_e(ticket.description)}</p></header>"
+        "<div class='ticket-detail'>"
         "<table><tbody>"
         f"<tr><th>Prioridad</th><td>{_e(_PRIORITY.get(ticket.priority, ticket.priority))}</td></tr>"
         f"<tr><th>Creador / asignado</th><td><code>{_e(ticket.creator_id)}</code> / "
@@ -296,6 +563,8 @@ def render_ticket(storage: Storage, ticket_id: str) -> str | None:
         "<h2>Tests (§20)</h2>"
         "<table><thead><tr><th>Pipeline</th><th>Commit</th><th>Estado</th>"
         "<th>Logs</th></tr></thead><tbody>" + test_rows + "</tbody></table>"
-        "<footer><a href='/'>← Panel</a></footer>"
+        "</div>"
+        + update_form
+        + "<footer><a href='/'>← Panel</a></footer>"
     )
     return _page(f"Geas · {ticket.id}", body)

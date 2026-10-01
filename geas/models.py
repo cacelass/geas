@@ -388,6 +388,7 @@ DEFAULT_ROLES = {
         "repository:write",
         "department:read",
         "department:manage",
+        "user:read",
         "user:manage",
         "dependency:create",
         "dependency:update",
