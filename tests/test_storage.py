@@ -139,6 +139,14 @@ class TestRoles:
         assert set(DEFAULT_ROLES["admin"]) == set(DEFAULT_PERMISSIONS)
         assert "ticket:manage" not in DEFAULT_PERMISSIONS
 
+    def test_el_rol_agent_tiene_ticket_create(self, storage, org):
+        # GEAS-008: los agentes de codigo pueden crear tickets; sin esto el
+        # ciclo del arnes depende de que una persona con rol manager cree
+        # cada ticket a mano.
+        from geas.models import DEFAULT_ROLES
+
+        assert "ticket:create" in DEFAULT_ROLES["agent"]
+
 
 # ─── Users y Agents ─────────────────────────────────────────────────────────
 

@@ -402,6 +402,7 @@ DEFAULT_ROLES = {
     ],
     "admin": DEFAULT_PERMISSIONS,
     "agent": [
+        "ticket:create",
         "ticket:read",
         "ticket:start",
         "ticket:block",
