@@ -13,3 +13,6 @@ build/
 *.sqlite3
 .env
 .venv
+geas.db-shm
+geas.db-wal
+geas.db
