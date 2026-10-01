@@ -83,17 +83,29 @@ code{font-family:ui-monospace,monospace;font-size:.8rem;background:#161b22;paddi
 .btn-sm:hover{background:#30363d}
 .btn-danger{color:#f85149;border-color:#f85149}
 .btn-danger:hover{background:#f8514922}
-.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
-.modal{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;max-width:700px;width:90%;max-height:80vh;overflow-y:auto}
-.modal h2{margin:0 0 .5rem;font-size:1.2rem}
-.modal .close{float:right;background:none;border:none;color:#8b949e;font-size:1.5rem;cursor:pointer;padding:0 .3rem}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(13,17,23,.92);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:0;max-width:800px;width:92%;max-height:85vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.modal-header{padding:1rem 1.5rem;border-bottom:1px solid #30363d;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#161b22;z-index:1}
+.modal-header h2{margin:0;font-size:1.1rem}
+.modal-body{padding:1.5rem}
+.modal .close{background:none;border:none;color:#8b949e;font-size:1.8rem;cursor:pointer;padding:0 .3rem;line-height:1}
 .modal .close:hover{color:#c9d1d9}
-.ticket-detail{margin-top:1rem}
-.ticket-detail table{background:#0d1117}
-.ticket-detail table tr:hover td{background:#0d1117}
-.modal .form-actions{display:flex;gap:.5rem;margin-top:1rem}
+.ticket-detail{margin-top:.5rem}
+.ticket-detail table{width:100%;background:transparent}
+.ticket-detail table tr:hover td{background:transparent}
+.ticket-detail table th{text-align:left;padding:.3rem .5rem;color:#8b949e;font-weight:600;border:none}
+.ticket-detail table td{padding:.3rem .5rem;border:none}
+.modal .form-actions{display:flex;gap:.5rem;margin-top:1rem;flex-wrap:wrap}
 .modal .form-actions button{padding:.4rem 1rem;border-radius:6px;font-size:.85rem;cursor:pointer;border:none;font-weight:600}
+.modal form{margin-top:1rem}
 #modal-content{display:none}
+.join-modal-content{display:none}
+.join-cmd-box{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:1rem;margin:.75rem 0}
+.join-cmd-box textarea{width:100%;background:transparent;border:none;color:#c9d1d9;font-family:ui-monospace,monospace;font-size:.85rem;resize:none;height:2.5rem;outline:none}
+.join-cmd-box .copy-btn{margin-top:.5rem;background:#21262d;border:1px solid #30363d;color:#58a6ff;padding:.3rem .8rem;border-radius:6px;cursor:pointer;font-size:.8rem}
+.join-cmd-box .copy-btn:hover{background:#30363d}
+.join-copy-msg{color:#3fb950;font-size:.85rem;margin-left:.5rem;display:none}
+.join-info{color:#8b949e;font-size:.9rem;margin:.5rem 0}
 footer{margin-top:2rem;color:#8b949e;font-size:.8rem;border-top:1px solid #30363d;padding-top:.5rem}
 """
 
@@ -246,15 +258,20 @@ def _ticket_table(tickets: list[Ticket], limit: int = 50) -> str:
     for ticket in tickets[:limit]:
         actor = ticket.assigned_actor_id or ticket.creator_id or "—"
         status_name = ticket.status.name if hasattr(ticket.status, "name") else str(ticket.status)
+        
+        branch_cell = _e(ticket.branch[:18]) if ticket.branch else '<span class="empty">—</span>'
+        actor_trunc = _e(actor[:15])
+        actor_rest = _e(actor[15:]) if len(actor) > 15 else ""
+        
         rows.append(
             "<tr>"
             f"<td class='ticket-id' onclick=\"showTicket('{_e(ticket.id)}')\"><code>{_e(ticket.id[:12])}</code></td>"
             f"<td>{_status_badge(ticket.status)}</td>"
             f"<td class='ticket-title' onclick=\"showTicket('{_e(ticket.id)}')\" title='{_e(ticket.title)}'>{_e(ticket.title)}</td>"
             f"<td>{_priority_badge(ticket.priority)}</td>"
-            f"<td><code>{_e(actor[:15])}</code>"
-            f"<br><span style='color:#8b949e;font-size:.7rem'>{_e(actor[15:]) if len(actor) > 15 else ''}</span></td>"
-            f"<td><code>{_e(ticket.branch[:18]) if ticket.branch else '<span class=\\'empty\\'>—</span>'}</code></td>"
+            f"<td><code>{actor_trunc}</code>"
+            f"<br><span style='color:#8b949e;font-size:.7rem'>{actor_rest}</span></td>"
+            f"<td><code>{branch_cell}</code></td>"
             f"<td><span style='color:#8b949e;font-size:.75rem'>{_e(ticket.created_at[:10])}</span></td>"
             "</tr>"
         )
@@ -344,12 +361,22 @@ def render_dashboard(storage: Storage, args: list[str] = None) -> str:
     # JavaScript para interactividad
     _JS = """
     <script>
+    function extractBody(html) {
+        var s=html.indexOf('<header>');
+        var e=html.indexOf('</html>');
+        if(s>-1&&e>-1) return html.substring(s,e+7);
+        return html;
+    }
+    function cleanModal(html) {
+        // Remove <style> blocks and <title> from modal content
+        return html.replace(/<style[\s\S]*?<\/style>/gi,'').replace(/<title[\s\S]*?<\/title>/gi,'');
+    }
     function showTicket(id) {
         fetch('/ticket/'+id)
             .then(r=>r.text())
             .then(html=>{
                 var m=document.getElementById('modal-content');
-                m.innerHTML=html;
+                document.getElementById('modal-body').innerHTML=cleanModal(extractBody(html));
                 m.style.display='flex';
             });
     }
@@ -407,9 +434,52 @@ def render_dashboard(storage: Storage, args: list[str] = None) -> str:
             })
             .catch(e=>alert('Error: '+e));
     }
-    window.onclick=function(ev){var m=document.getElementById('modal-content');if(ev.target==m)closeModal();}
+    function joinTeam(orgId, orgName) {
+        var modal=document.getElementById('join-modal');
+        var cmdEl=document.getElementById('join-cmd');
+        var token=generateToken();
+        cmdEl.value='export GEAS_TOKEN="'+token+'" && geas user list "'+orgName+'"';
+        modal.style.display='flex';
+        document.getElementById('join-token').value=token;
+        document.getElementById('join-org-id').value=orgId;
+    }
+    function copyCmd() {
+        var el=document.getElementById('join-cmd');
+        el.select();document.execCommand('copy');
+        document.getElementById('join-copy-msg').style.display='block';
+        setTimeout(()=>document.getElementById('join-copy-msg').style.display='none',2000);
+    }
+    function generateToken() {
+        var c='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        var t='geas_';
+        for(var i=0;i<32;i++) t+=c[Math.floor(Math.random()*c.length)];
+        return t;
+    }
+    function closeModal() {
+        document.getElementById('modal-content').style.display='none';
+    }
+    function closeJoinModal() {
+        document.getElementById('join-modal').style.display='none';
+    }
+    window.onclick=function(ev){
+        var m=document.getElementById('modal-content');
+        var j=document.getElementById('join-modal');
+        if(ev.target==m)closeModal();
+        if(ev.target==j)closeJoinModal();
+    }
     </script>
     """
+    
+    # Header con botón "unirse al equipo"
+    join_btn = ""
+    if orgs:
+        org_data = "|".join(f'{o.id}:{o.name.replace("|","-")}' for o in orgs)
+        join_btn = (
+            "<button onclick='joinTeam(\"{0}\",\"{1}\")' "
+            "style='background:#58a6ff;color:#0d1117;border:none;padding:.3rem .8rem;"
+            "border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;margin-left:1rem'>"
+            "Unirse al equipo</button>"
+        ).format(orgs[0].id, orgs[0].name)
     
     if not orgs:
         body = (
@@ -424,17 +494,43 @@ def render_dashboard(storage: Storage, args: list[str] = None) -> str:
         )
         body = (
             "<header><h1>Geas</h1>"
-            "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p></header>"
+            "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p>"
+            + join_btn + "</header>"
             + sections
         )
     
-    modal = "<div id='modal-content' class='modal-overlay' onclick='closeModal()'><div class='modal' onclick='event.stopPropagation()'><span class='close' onclick='closeModal()'>×</span><div id='modal-body'></div></div></div>"
+    ticket_modal = (
+        "<div id='modal-content' class='modal-overlay' onclick='closeModal()'>"
+        "<div class='modal' onclick='event.stopPropagation()'>"
+        "<div class='modal-header'><h2>Detalle del ticket</h2>"
+        "<span class='close' onclick='closeModal()'>×</span></div>"
+        "<div class='modal-body' id='modal-body'></div></div></div>"
+    )
+    
+    join_modal = (
+        "<div id='join-modal' class='modal-overlay' onclick='closeJoinModal()'>"
+        "<div class='modal' onclick='event.stopPropagation()'>"
+        "<div class='modal-header'><h2>Unirse al equipo</h2>"
+        "<span class='close' onclick='closeJoinModal()'>×</span></div>"
+        "<div class='modal-body'>"
+        "<p class='join-info'>Copia y pega este comando en tu terminal para unirte al equipo. "
+        "Tu contraseña por defecto es <code>abc123.</code></p>"
+        "<div class='join-cmd-box'>"
+        "<textarea id='join-cmd' readonly onclick='this.select()'></textarea>"
+        "<div style='display:flex;align-items:center'>"
+        "<button class='copy-btn' onclick='copyCmd()'>Copiar comando</button>"
+        "<span id='join-copy-msg' class='join-copy-msg'>✓ Copiado</span>"
+        "</div></div>"
+        "<input type='hidden' id='join-token'>"
+        "<input type='hidden' id='join-org-id'>"
+        "</div></div></div>"
+    )
     
     body += (
         "<footer>Panel interactivo · Escritura: UI (usuarios/dispositivos) y API/MCP "
         "(<code>POST /api/tools/&lt;tool&gt;</code> con <code>X-Geas-Actor</code>)</footer>"
     )
-    return _page("Geas", _JS + body + modal)
+    return _page("Geas", _JS + body + ticket_modal + join_modal)
 
 
 def _resource_row(storage: Storage, resource_id: str) -> str:
