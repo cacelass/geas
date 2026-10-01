@@ -22,6 +22,9 @@ Uso:
     geas lock show <resource>    Ver lock de un recurso
     geas events <org>            Ver eventos recientes
     geas audit <org>             Ver log de auditoría
+    geas device list <org>       Listar dispositivos permitidos
+    geas device add <org> <name> Añadir dispositivo (ej: geas device add <org> Portatil)
+    geas device remove <org> <name>  Desactivar dispositivo
     geas mcp list                Herramientas MCP (§26)
     geas serve                   Panel web de estado (§42)
     geas sync [path]             Estructura declarativa → base de datos (§43)
@@ -41,6 +44,7 @@ from geas.models import (
     DEFAULT_ROLES,
     Agent,
     Department,
+    Device,
     Organization,
     Policy,
     Repository,
@@ -148,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_events(storage, args)
         elif cmd == "audit":
             return _cmd_audit(storage, args)
+        elif cmd == "device":
+            return _cmd_device(storage, args)
         else:
             print(f"Comando desconocido: {cmd}", file=sys.stderr)
             return 1
@@ -1168,6 +1174,68 @@ def _cmd_audit(storage: Storage, args: list[str]) -> int:
             f"  {a.timestamp[:19]}  {a.actor_id[:8]}  {a.action:25}  {a.resource_type}:{a.resource_id[:8]}"
         )
     return 0
+
+
+def _cmd_device(storage: Storage, args: list[str]) -> int:
+    """geas device list|add|remove — gestión de dispositivos permitidos.
+
+    Uso:
+        geas device list <org_id>           Listar dispositivos
+        geas device add <org_id> <name>     Añadir dispositivo
+        geas device remove <org_id> <name>  Desactivar dispositivo
+    """
+    if not args:
+        print("Uso: geas device list|add|remove ...")
+        return 1
+
+    sub = args[0]
+    if sub == "list":
+        if len(args) < 2:
+            print("Uso: geas device list <org_id>")
+            return 1
+        devices = storage.list_devices(args[1])
+        if not devices:
+            print("No hay dispositivos.")
+            return 0
+        for d in devices:
+            status = "activo" if d.active else "inactivo"
+            print(f"  {d.id[:8]}  {d.name}  [{status}]")
+        return 0
+
+    if sub == "add":
+        if len(args) < 3:
+            print("Uso: geas device add <org_id> <name>")
+            return 1
+        org_id = args[1]
+        name = args[2]
+        existing = storage.get_device_by_name(org_id, name)
+        if existing and existing.active:
+            print(f"Dispositivo ya existe y está activo: {name}")
+            return 1
+        d = Device(organization_id=org_id, name=name)
+        storage.create_device(d)
+        print(f"Dispositivo creado: {d.id[:8]}  {d.name}")
+        return 0
+
+    if sub == "remove":
+        if len(args) < 3:
+            print("Uso: geas device remove <org_id> <name>")
+            return 1
+        org_id = args[1]
+        name = args[2]
+        device = storage.get_device_by_name(org_id, name)
+        if not device:
+            print(f"Dispositivo no encontrado: {name}")
+            return 1
+        if not device.active:
+            print(f"Dispositivo ya está inactivo: {name}")
+            return 0
+        storage.deactivate_device(device.id)
+        print(f"Dispositivo desactivado: {name}")
+        return 0
+
+    print(f"Subcomando desconocido: device {sub}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

@@ -151,6 +151,24 @@ class Agent:
     created_at: str = field(default_factory=_now)
 
 
+# ─── Device ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Device:
+    """Dispositivo autorizado para acceder a GEAS (§42).
+
+    Cada dispositivo se registra con un nombre único por organización.
+    Se persiste en la BD y se expone por la UI y la CLI.
+    """
+
+    id: str = field(default_factory=_uuid)
+    organization_id: str = ""
+    name: str = ""
+    active: bool = True
+    created_at: str = field(default_factory=_now)
+
+
 # ─── Repository ─────────────────────────────────────────────────────────────
 
 
