@@ -24,6 +24,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from geas.dbpath import resolve_db
 from geas.git import LocalGitProvider
 from geas.models import (
     AuditLog,
@@ -64,8 +65,16 @@ class WorkContext:
         self.config_file.write_text("\n".join(lines) + "\n")
 
 
-def _storage(db_path: str = "geas.db") -> Storage:
-    return Storage(db_path)
+def _storage(db_path: str | None = None) -> Storage:
+    """Abre la BD de GEAS.
+
+    Sin argumentos, usa `resolve_db()`, que respeta `GEAS_DB` y
+    `GEAS_DATA_DIR` en vez de deducir `./geas.db` del cwd. `geas work` NO lleva
+    el guard de comensal: cuando se invoca desde `cli.main()` ya ha pasado, y
+    llamarla dos veces haria dos preguntas por lo mismo. El que se llama suelta
+    (API) es el que no tiene guard, y se documenta como tal (1ea3bcc7).
+    """
+    return Storage(db_path or resolve_db())
 
 
 def cmd_init(storage: Storage, args: list[str]) -> int:

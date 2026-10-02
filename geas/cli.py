@@ -34,10 +34,18 @@ Uso:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from geas.dbpath import (
+    comensal,
+    lock_path,
+    reservar_servidor,
+    resolve_db,
+    servidor_vivo,
+)
 from geas.models import (
     ALL_PERMISSIONS,
     DEFAULT_PERMISSIONS,
@@ -105,11 +113,42 @@ def main(argv: list[str] | None = None) -> int:
         print(__doc__)
         return 0
 
-    db_path = Path("geas.db")
-    storage = Storage(db_path)
-
     cmd = argv[0]
     args = argv[1:]
+
+    db_path = resolve_db()
+    os.environ.setdefault("GEAS_COMANDO", f"geas {cmd}".strip())
+
+    if cmd == "where":
+        # No abre la BD, y no puede aplicársele el guard: es justo el comando
+        # que se consulta cuando la BD molesta. Un diagnóstico al que no se
+        # puede preguntar en el momento en que hace falta no sirve.
+        return _cmd_where()
+
+    if cmd == "serve":
+        # El servidor no es un comensal: se RESERVA la BD mientras vive, y se
+        # hace atras si otro ya la tiene. Sin esto, un segundo `geas serve` se
+        # queda con la BD abierta aunque pierda el puerto.
+        with reservar_servidor(db_path):
+            storage = Storage(db_path)
+            try:
+                return _cmd_serve(storage, args)
+            finally:
+                storage.close()
+
+    # Cualquier otro comando se hace atras si hay un servidor con la BD abierta
+    # (1ea3bcc7). Antes ese guard solo existia en `geas_admin.py`, que vive en
+    # el repo de edgebet: la propia CLI de GEAS se saltaba la regla.
+    with comensal(db_path):
+        storage = Storage(db_path)
+        try:
+            return _despachar(cmd, args, storage)
+        finally:
+            storage.close()
+
+
+def _despachar(cmd: str, args: list[str], storage: Storage) -> int:
+    """Reparte el comando. La BD ya esta abierta y el guard ya ha pasado."""
 
     try:
         if cmd == "init":
@@ -122,8 +161,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_harness(storage, args)
         elif cmd == "mcp":
             return _cmd_mcp(storage, args)
-        elif cmd == "serve":
-            return _cmd_serve(storage, args)
+        elif cmd == "where":
+            return _cmd_where()
         elif cmd == "org":
             return _cmd_org(storage, args)
         elif cmd == "dept":
@@ -936,6 +975,33 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
     if summary.kept_worktree:
         print(f"worktree:  {summary.worktree} (conservado)")
     return 0 if summary.result == "success" else 1
+
+
+def _cmd_where() -> int:
+    """Dice donde esta la BD y quien la tiene abierta. Sin adivinar (1ea3bcc7).
+
+    No abre la BD a proposito: este comando se consulta precisamente cuando algo
+    va mal con ella.
+    """
+    db_path = resolve_db()
+    print(f"BD:       {db_path}")
+    print(f"existe:   {'si' if db_path.exists() else 'NO'}")
+    print(f"lock:     {lock_path(db_path)}")
+    vivo = servidor_vivo(db_path)
+    print(f"servidor: {'vivo, no abras la BD a mano' if vivo else 'ninguno'}")
+    origen = (
+        "GEAS_DB"
+        if os.environ.get("GEAS_DB")
+        else "GEAS_DATA_DIR"
+        if os.environ.get("GEAS_DATA_DIR")
+        else f"{db_path} (instalada)"
+        if db_path != Path("geas.db")
+        else "./geas.db (relativo al cwd: por eso es peligroso)"
+    )
+    print(f"origen:   {origen}")
+    if not vivo and os.environ.get("GEAS_ALLOW_LIVE") == "1":
+        print("aviso:    GEAS_ALLOW_LIVE=1 esta puesto: el guard de la BD esta saltado.")
+    return 0
 
 
 def _cmd_serve(storage: Storage, args: list[str]) -> int:
