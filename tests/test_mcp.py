@@ -7,6 +7,8 @@ bloqueo de otro ticket, completar y liberar.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from geas.mcp import GeasMcp
@@ -71,6 +73,137 @@ def agent(storage, org, admin_role):
 @pytest.fixture
 def mcp(storage, org, agent):
     return GeasMcp(storage, actor_id=agent.id, org_id=org.id)
+
+
+class TestElEsquemaTOOLSBasta:
+    """Lo que TOOLS declara tiene que bastar para llamar a la herramienta.
+
+    El dispatch `call` traduce un KeyError a "Falta parametro: 'x'",
+    asi que si el dispatch lee un parametro que TOOLS no declara, cualquier
+    cliente que se guie por el esquema recibe un error alucionante en una
+    herramienta que, segun TOOLS, no necesita ese parametro. Pasó con
+    `commit_after`, `commit_before` y `reason` (ticket 3662e133).
+
+    El test llama cada herramienta del esquema con SUS params declarados y
+    ninguno, y solo exige que no salte "Falta parametro": el resto de errores
+    (ticket inexistente, FORBIDDEN) son legítimos y los cubre la suite.
+    """
+
+    # Valores de mentira que pasan la validación de presencia. El objetivo es
+    # comprobar el contrato, no el comportamiento de cada herramienta.
+    FALSOS: ClassVar[dict] = {
+        "ticket_id": "no-existe",
+        "commit_before": "abc123",
+        "commit_after": "def456",
+        "commit_sha": "abc123",
+        "commit_id": "abc123",
+        "result": "hecho",
+        "reason": "motivo",
+        "message": "mensaje",
+        "resource_id": "no-existe",
+        "repository_id": "no-existe",
+        "organization_id": "no-existe",
+        "department_id": "",
+        "title": "titulo",
+        "description": "descripcion",
+        "priority": 0,
+        "resources": [],
+        "dependencies": [],
+        "fields": {"title": "otro"},
+        "name": "google",
+        "status": "ok",
+        "provider": "openai",
+        "model": "gpt",
+    }
+
+    @staticmethod
+    def _faltaria(respuesta: dict) -> str | None:
+        """Devuelve el nombre del parametro que falta, o None si no falta."""
+        error = respuesta.get("error", "") or ""
+        if respuesta.get("success"):
+            return None
+        if error.startswith("Falta parametro") or "Falta par" in error:
+            return error
+        return None
+
+    def test_toda_herramienta_del_esquema_se_puede_llamar_con_sus_params(self, mcp):
+        from geas.mcp import TOOLS
+
+        sin_probar = []
+        for herramienta in TOOLS:
+            nombre = herramienta["name"]
+            declarados = herramienta.get("params", [])
+            faltando = [p for p in declarados if p not in self.FALSOS]
+            if faltando:
+                sin_probar.append(f"{nombre}: sin valor de mentira para {faltando}")
+                continue
+            params = {p: self.FALSOS[p] for p in declarados}
+            try:
+                respuesta = mcp.call(nombre, params)
+            except KeyError as exc:
+                # El unico parametro que puede faltar sin estar en TOOLS es el
+                # que el dispatch pide con `params["x"]`. El dispatch se traga
+                # el KeyError y responde "Falta parametro"; si algo se escapa
+                # hasta aqui, es justo el fallo que buscamos.
+                raise AssertionError(
+                    f"{nombre}: TOOLS declara {declarados} pero el dispatch ha "
+                    f"pedido '{exc.args[0] if exc.args else exc}', que no esta "
+                    f"declarado. Anadelo a TOOLS o no lo leas."
+                ) from exc
+            except Exception:  # noqa: BLE001, S112
+                # Cualquier otra excepcion es de la herramienta con datos de
+                # mentira (sync sobre un repo que no es git, por ejemplo), no
+                # del contrato, que es lo unico que este test comprueba. Los
+                # tests de cada herramienta cubren el comportamiento.
+                continue
+            problema = self._faltaria(respuesta)
+            assert problema is None, (
+                f"TOOLS declara {declarados} para {nombre}, pero el dispatch "
+                f"pide algo mas: {respuesta.get('error')}. O el dispatch lee un "
+                f"parametro que TOOLS no declara, o falta el valor de mentira."
+            )
+        assert not sin_probar, "; ".join(sin_probar)
+
+    def test_cancel_ticket_conserva_el_motivo(self, mcp):
+        """El motivo se guardaba y se perdia en silencio (3662e133)."""
+        ticket = mcp.create_ticket(title="Se cancela")["data"]["id"]
+        r = mcp.call("cancel_ticket", {"ticket_id": ticket, "reason": "obsoleto"})
+        assert r["success"] is True
+        assert r["data"]["reason"] == "obsoleto"
+
+        eventos = mcp.storage.conn.execute(
+            "SELECT metadata FROM events WHERE resource_id = ? "
+            "AND event_type = 'TICKET_CANCELLED'",
+            (ticket,),
+        ).fetchall()
+        assert eventos, "no se registro ningun evento TICKET_CANCELLED"
+        import json
+
+        assert json.loads(eventos[-1]["metadata"])["reason"] == "obsoleto"
+
+    def test_cancel_ticket_sin_motivo_todavia_funciona(self, mcp):
+        ticket = mcp.create_ticket(title="Sin motivo")["data"]["id"]
+        r = mcp.call("cancel_ticket", {"ticket_id": ticket})
+        assert r["success"] is True
+
+    def test_report_commit_conserva_el_mensaje(self, mcp):
+        ticket = mcp.create_ticket(title="Con commit")["data"]["id"]
+        r = mcp.call(
+            "report_commit",
+            {"ticket_id": ticket, "commit_sha": "abc123", "message": "primer commit"},
+        )
+        assert r["success"] is True
+
+        eventos = mcp.storage.conn.execute(
+            "SELECT metadata FROM events WHERE resource_id = ? "
+            "AND event_type = 'COMMIT_REGISTERED'",
+            (ticket,),
+        ).fetchall()
+        import json
+
+        metadata = json.loads(eventos[-1]["metadata"])
+        assert metadata["message"] == "primer commit"
+        assert metadata["commit"] == "abc123"
 
 
 class TestTicketsViaMcp:

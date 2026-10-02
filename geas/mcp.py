@@ -359,7 +359,7 @@ class GeasMcp:
             )
         return _ok({"id": ticket_id, "status": "DONE", "locks_released": released})
 
-    def cancel_ticket(self, ticket_id: str) -> dict:
+    def cancel_ticket(self, ticket_id: str, reason: str = "") -> dict:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
@@ -377,9 +377,21 @@ class GeasMcp:
                     actor_id=self.actor_id,
                     resource_type="ticket",
                     resource_id=ticket_id,
+                    # El motivo va en el evento y no en una columna nueva del
+                    # ticket: `tickets` no tiene campo para el y a nadie le
+                    # hace falta uno, mientras que perder el motivo era
+                    # precisamente el fallo (3662e133).
+                    metadata={"reason": reason} if reason else {},
                 )
             )
-        return _ok({"id": ticket_id, "status": "CANCELLED", "locks_released": released})
+        return _ok(
+            {
+                "id": ticket_id,
+                "status": "CANCELLED",
+                "locks_released": released,
+                "reason": reason,
+            }
+        )
 
     def get_dependencies(self, ticket_id: str) -> dict:
         t = self.storage.get_ticket(ticket_id)
@@ -763,7 +775,7 @@ class GeasMcp:
 
     # ─── Ejecuciones y tests ───────────────────────────────────────────
 
-    def report_commit(self, ticket_id: str, commit_sha: str) -> dict:
+    def report_commit(self, ticket_id: str, commit_sha: str, message: str = "") -> dict:
         t = self.storage.get_ticket(ticket_id)
         if not t:
             return _err(f"Ticket no encontrado: {ticket_id}")
@@ -788,7 +800,8 @@ class GeasMcp:
                 actor_id=self.actor_id,
                 resource_type="ticket",
                 resource_id=ticket_id,
-                metadata={"commit": commit_sha},
+                metadata={"commit": commit_sha}
+                | ({"message": message} if message else {}),
             )
         )
         return _ok({"ticket_id": ticket_id, "commit": commit_sha})
@@ -936,7 +949,9 @@ class GeasMcp:
                     params.get("result", ""),
                 )
             if tool == "cancel_ticket":
-                return self.cancel_ticket(params["ticket_id"])
+                return self.cancel_ticket(
+                    params["ticket_id"], params.get("reason", "")
+                )
             if tool == "get_dependencies":
                 return self.get_dependencies(params["ticket_id"])
             if tool == "lock_resource":
@@ -966,7 +981,11 @@ class GeasMcp:
             if tool == "sync":
                 return self.sync()
             if tool == "report_commit":
-                return self.report_commit(params["ticket_id"], params["commit_sha"])
+                return self.report_commit(
+                    params["ticket_id"],
+                    params["commit_sha"],
+                    params.get("message", ""),
+                )
             if tool == "report_test_result":
                 return self.report_test_result(
                     params["ticket_id"],
@@ -1027,7 +1046,7 @@ TOOLS = [
     {
         "name": "start_ticket",
         "description": "Empezar ticket: locks + commit_before",
-        "params": ["ticket_id"],
+        "params": ["ticket_id", "commit_before"],
     },
     {
         "name": "block_ticket",
@@ -1037,12 +1056,12 @@ TOOLS = [
     {
         "name": "complete_ticket",
         "description": "Completar: commit_after + release locks",
-        "params": ["ticket_id"],
+        "params": ["ticket_id", "commit_after", "result"],
     },
     {
         "name": "cancel_ticket",
         "description": "Cancelar ticket",
-        "params": ["ticket_id"],
+        "params": ["ticket_id", "reason"],
     },
     {
         "name": "get_dependencies",
@@ -1068,7 +1087,7 @@ TOOLS = [
     {
         "name": "report_commit",
         "description": "Registrar commit",
-        "params": ["ticket_id", "commit_sha"],
+        "params": ["ticket_id", "commit_sha", "message"],
     },
     {
         "name": "report_test_result",
