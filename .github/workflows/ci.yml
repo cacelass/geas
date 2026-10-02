@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # Un commit nuevo invalida el intento anterior del mismo ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+
+      # La version se fija por uv.lock si existe; si no, se pide la ultima estable.
+      - name: Instalar dependencias
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --locked --all-extras --dev
+          else
+            uv sync --all-extras --dev
+          fi
+
+      # La suite va entera, sin -x: si se parase en el primer fallo, un
+      # arreglo podría dejar otros tres sin ver y parecer que ya esta.
+      - name: Suite
+        run: uv run pytest -q
+
+      # ruff ya pasa en local (arreglado en el ticket fef445e7), asi que esto no
+      # es una aspiracion: si se rompe, alguien ha anadido codigo que no cumple.
+      - name: Lint
+        run: uv run ruff check .

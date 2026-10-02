@@ -16,9 +16,9 @@ from __future__ import annotations
 import html as _html
 import json as _json
 from datetime import UTC, datetime
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
 
-from geas.models import Repository, Resource, ResourceLock, Ticket, TicketStatus, User
+from geas.models import Repository, Resource, ResourceLock, Ticket, TicketStatus
 from geas.storage import Storage
 
 _STATUS_ORDER = [
@@ -263,8 +263,6 @@ def _ticket_table(tickets: list[Ticket], limit: int = 50) -> str:
     rows = []
     for ticket in tickets[:limit]:
         actor = ticket.assigned_actor_id or ticket.creator_id or "—"
-        status_name = ticket.status.name if hasattr(ticket.status, "name") else str(ticket.status)
-        
         branch_cell = _e(ticket.branch[:18]) if ticket.branch else '<span class="empty">—</span>'
         actor_trunc = _e(actor[:15])
         actor_rest = _e(actor[15:]) if len(actor) > 15 else ""
@@ -357,7 +355,7 @@ def _org_section(storage: Storage, org, tickets: list[Ticket], status_filter: st
     )
 
 
-def render_dashboard(storage: Storage, args: list[str] = None) -> str:
+def render_dashboard(storage: Storage, args: list[str] | None = None) -> str:
     """HTML del panel: una sección por organización con filtros."""
     if args is None:
         args = []

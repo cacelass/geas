@@ -245,7 +245,7 @@ def test_run_ticket_with_llm_provider_writes_artifact_and_usage(
 ):
     """Multi-provider (§43): en vez de comando local, llama al LLM y registra
     los tokens/coste reales que vuelven en la respuesta."""
-    from tests.fake_llm_server import FakeLLMServer  # noqa: PLC0415 -- helper de test
+    from tests.fake_llm_server import FakeLLMServer
 
     ticket = _ticket(storage, org, repo)
     runner = ExecutionRunner(storage, harness=LocalHarness(".geas/worktrees"))
@@ -284,7 +284,7 @@ def test_run_ticket_with_llm_provider_keeps_artifact(
     storage, org, repo, repo_path, monkeypatch
 ):
     """Con --keep, el artefacto del LLM queda en el worktree conservado."""
-    from tests.fake_llm_server import FakeLLMServer  # noqa: PLC0415 -- helper de test
+    from tests.fake_llm_server import FakeLLMServer
 
     ticket = _ticket(storage, org, repo)
     runner = ExecutionRunner(storage, harness=LocalHarness(".geas/worktrees"))
@@ -308,6 +308,6 @@ def test_run_ticket_with_llm_provider_keeps_artifact(
     assert "Respuesta Anthropic" in artifact.read_text()
 
     # limpieza manual del worktree de prueba
-    import shutil  # noqa: PLC0415
+    import shutil
 
     shutil.rmtree(summary.worktree, ignore_errors=True)

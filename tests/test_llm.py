@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from geas.llm import AnthropicClient, LLMError, OpenAIClient, get_client
-
 from tests.fake_llm_server import FakeLLMServer
 
 

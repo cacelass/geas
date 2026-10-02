@@ -13,10 +13,10 @@ import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from geas.mcp import TOOLS, GeasMcp
-from geas.models import User, AuditLog, Event
+from geas.models import AuditLog, User
 from geas.storage import Storage
 from geas.webui import render_dashboard, render_ticket
 
