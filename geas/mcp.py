@@ -722,6 +722,40 @@ class GeasMcp:
                 ],
             }
         )
+
+    def list_tickets(self, status: str | None = None, org_id: str | None = None) -> dict:
+        """Listar tickets, con filtros opcionales por estado y organización."""
+        if not org_id:
+            return _err("org_id requerido")
+        denied = self._authorize(org_id, "ticket:read")
+        if denied:
+            return denied
+        try:
+            tickets = self.storage.list_tickets(org_id)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"No se pudieron listar tickets: {exc}")
+        if status:
+            s = status.upper()
+            tickets = [t for t in tickets if t.status.value.upper() == s]
+        return _ok(
+            {
+                "org_id": org_id,
+                "count": len(tickets),
+                "tickets": [
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "status": t.status.value,
+                        "priority": t.priority,
+                        "assignee": t.assignee,
+                        "branch": t.branch,
+                        "repository_id": t.repository_id,
+                        "department_id": t.department_id,
+                    }
+                    for t in tickets
+                ],
+            }
+        )
     def has_unpublished(self, repository_id: str, branch: str | None = None) -> dict:
         """¿Hay trabajo sin publicar en este repo?
 
@@ -1045,6 +1079,10 @@ class GeasMcp:
                 )
             if tool == "is_published":
                 return self.is_published(params["commit"], params.get("repository_id"))
+            if tool == "list_tickets":
+                return self.list_tickets(
+                    params.get("status"), params.get("org_id")
+                )
             if tool == "get_permissions":
                 return self.get_permissions()
             if tool == "sync":
@@ -1212,6 +1250,11 @@ TOOLS = [
         "name": "is_published",
         "description": "¿Está un commit visible en alguna rama del remoto (origin)?",
         "params": ["commit", "repository_id"],
+    },
+    {
+        "name": "list_tickets",
+        "description": "Listar tickets (opcionalmente filtrados por estado/organización)",
+        "params": ["status", "org_id"],
     },
     {
         "name": "get_permissions",
