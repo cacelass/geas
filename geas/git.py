@@ -89,6 +89,12 @@ class GitProvider(ABC):
     ) -> list[CommitInfo]: ...
 
     @abstractmethod
+    def has_unpublished(self, branch: str | None = None) -> bool: ...
+
+    @abstractmethod
+    def is_published(self, commit: str) -> bool: ...
+
+    @abstractmethod
     def get_head(self) -> str: ...
 
     @abstractmethod
@@ -131,11 +137,12 @@ class LocalGitProvider(GitProvider):
                 parts = meta.split()
                 branch = parts[0].split("...")[0]
                 if len(parts) > 1 and parts[1].startswith("["):
-                    info = parts[1][1:-1]
+                    info = " ".join(parts[1:])
+                    info = info.strip("[]")
                     if "ahead" in info:
-                        ahead = int(info.split("ahead ")[1].split(",")[0].split("]")[0])
+                        ahead = int("".join(c for c in info if c.isdigit()))
                     if "behind" in info:
-                        behind = int(info.split("behind ")[1].split("]")[0])
+                        behind = int("".join(c for c in info.split("behind",1)[-1] if c.isdigit()))
             elif line.startswith("??"):
                 untracked.append(line[3:])
             else:
@@ -233,6 +240,35 @@ class LocalGitProvider(GitProvider):
             deletions=deletions,
             patch=r3.stdout,
         )
+
+    def has_unpublished(self, branch: str | None = None) -> bool:
+        """¿Hay trabajo sin publicar para este repo/branch?
+
+        «Sin publicar» significa commits locales por delante de origin (ahead > 0).
+        fetch() es opcional: quien pregunta puede llamar sync antes; este método
+        solo lee lo que hay, sin lanzar.
+        """
+        try:
+            s = self.status()
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            return False
+        return s.ahead > 0
+
+    def is_published(self, commit: str) -> bool:
+        """¿Está este commit visible en alguna rama del remoto (origin)?
+
+        Se hace una consulta por commit remoto: si existe, está publicado. No
+        depende del branch local. En caso de fallo, devuelve `False` (no inventa).
+        """
+        if not commit:
+            return False
+        # --exit-code devuelve 0 si el commit existe en el remoto, 2 si no
+        r = self._run(["branch", "-r", "--contains", commit])
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+        # fallback: git ls-remote
+        r2 = self._run(["ls-remote", "origin", commit])
+        return bool(r2.returncode == 0 and r2.stdout.strip())
 
     def rollback(self, commit: str) -> bool:
         """Restaurar el estado de `commit` sin destruir historial (§11).
@@ -406,9 +442,12 @@ class GitHubProvider(ApiGitProvider):
         params: dict[str, str | int] = {"per_page": limit}
         if since:
             params["since"] = since  # fecha ISO-8601 (nativo de la API)
-        data = self._request(
-            "GET", f"/repos/{self.owner}/{self.repo}/commits", params=params
-        ) or []
+        data = (
+            self._request(
+                "GET", f"/repos/{self.owner}/{self.repo}/commits", params=params
+            )
+            or []
+        )
         result: list[CommitInfo] = []
         for c in data:
             commit = c.get("commit") or {}
@@ -467,9 +506,12 @@ class GitLabProvider(ApiGitProvider):
         params: dict[str, str | int] = {"per_page": limit}
         if since:
             params["since"] = since  # fecha ISO-8601 (nativo de la API)
-        data = self._request(
-            "GET", f"/projects/{self._project()}/repository/commits", params=params
-        ) or []
+        data = (
+            self._request(
+                "GET", f"/projects/{self._project()}/repository/commits", params=params
+            )
+            or []
+        )
         result: list[CommitInfo] = []
         for c in data:
             result.append(
@@ -498,11 +540,14 @@ class BitbucketProvider(ApiGitProvider):
         return "Basic " + b64encode(self._token.encode()).decode()
 
     def _find_open_pr(self, branch: str) -> dict | None:
-        data = self._request(
-            "GET",
-            f"/repositories/{self.owner}/{self.repo}/pullrequests",
-            params={"state": "OPEN", "pagelen": 100},
-        ) or {}
+        data = (
+            self._request(
+                "GET",
+                f"/repositories/{self.owner}/{self.repo}/pullrequests",
+                params={"state": "OPEN", "pagelen": 100},
+            )
+            or {}
+        )
         for pr in data.get("values", []):
             source = (pr.get("source") or {}).get("branch") or {}
             if source.get("name") == branch:
@@ -535,9 +580,12 @@ class BitbucketProvider(ApiGitProvider):
         self, since: str | None = None, limit: int = 10
     ) -> list[CommitInfo]:
         params: dict[str, str | int] = {"pagelen": limit}
-        data = self._request(
-            "GET", f"/repositories/{self.owner}/{self.repo}/commits", params=params
-        ) or {}
+        data = (
+            self._request(
+                "GET", f"/repositories/{self.owner}/{self.repo}/commits", params=params
+            )
+            or {}
+        )
         result: list[CommitInfo] = []
         for c in data.get("values", []):
             result.append(
@@ -551,7 +599,9 @@ class BitbucketProvider(ApiGitProvider):
         return result
 
 
-def get_provider(provider: str = "local", repo_path: str | None = None, **kwargs) -> GitProvider:
+def get_provider(
+    provider: str = "local", repo_path: str | None = None, **kwargs
+) -> GitProvider:
     """Factory (§18): devuelve el proveedor según el nombre.
 
     local / self-hosted → CLI de git contra el working copy.

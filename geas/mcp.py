@@ -722,6 +722,69 @@ class GeasMcp:
                 ],
             }
         )
+    def has_unpublished(self, repository_id: str, branch: str | None = None) -> dict:
+        """¿Hay trabajo sin publicar en este repo?
+
+        «Sin publicar» = commits locales por delante de origin (ahead > 0). No
+        obliga a hacer fetch: status() ya lee el upstream local si existe.
+        Requiere permiso `git:read` sobre el repo.
+        """
+        if not repository_id:
+            return _err("repository_id requerido")
+        repo = self.storage.get_repository(repository_id)
+        if not repo:
+            return _err(f"Repositorio no existe: {repository_id}")
+        denied = self._authorize(repo.organization_id, "git:read")
+        if denied:
+            return denied
+        from geas.git import LocalGitProvider
+
+        try:
+            g = LocalGitProvider(repo.path)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"No es un repo Git en {repo.path}: {exc}")
+        try:
+            if branch:
+                pass
+            ahead = g.status().ahead
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"git status falló en {repo.path}: {exc}")
+        return _ok({"repository_id": repository_id, "ahead": ahead, "has_unpublished": ahead > 0})
+
+    def is_published(self, commit: str, repository_id: str | None = None) -> dict:
+        """¿Está este commit visible en alguna rama del remoto (origin)?
+
+        Requiere permiso `git:read` sobre algún repo (o el indicado).
+        """
+        if not commit:
+            return _err("commit requerido")
+        org_id = None
+        repo_path = None
+        if repository_id:
+            repo = self.storage.get_repository(repository_id)
+            if not repo:
+                return _err(f"Repositorio no existe: {repository_id}")
+            org_id = repo.organization_id
+            repo_path = repo.path
+        if org_id:
+            denied = self._authorize(org_id, "git:read")
+            if denied:
+                return denied
+        from geas.git import LocalGitProvider
+
+        try:
+            if repo_path:
+                g = LocalGitProvider(repo_path)
+            else:
+                g = LocalGitProvider()
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"No se pudo inicializar git: {exc}")
+        try:
+            published = g.is_published(commit)
+        except Exception as exc:  # noqa: BLE001
+            return _err(f"git falló: {exc}")
+        return _ok({"commit": commit, "published": published})
+
 
     def get_permissions(self) -> dict:
         """Permisos EFECTIVOS del actor que pregunta (§7).
@@ -976,6 +1039,12 @@ class GeasMcp:
                 return self.list_actors(params.get("organization_id", ""))
             if tool == "list_resources":
                 return self.list_resources(params["repository_id"])
+            if tool == "has_unpublished":
+                return self.has_unpublished(
+                    params.get("repository_id", ""), params.get("branch")
+                )
+            if tool == "is_published":
+                return self.is_published(params["commit"], params.get("repository_id"))
             if tool == "get_permissions":
                 return self.get_permissions()
             if tool == "sync":
@@ -1133,6 +1202,16 @@ TOOLS = [
         "name": "list_resources",
         "description": "Recursos bloqueables de un repo (GEAS-007)",
         "params": ["repository_id"],
+    },
+    {
+        "name": "has_unpublished",
+        "description": "¿Hay trabajo sin publicar en el repo (commits ahead de origin)?",
+        "params": ["repository_id", "branch"],
+    },
+    {
+        "name": "is_published",
+        "description": "¿Está un commit visible en alguna rama del remoto (origin)?",
+        "params": ["commit", "repository_id"],
     },
     {
         "name": "get_permissions",
