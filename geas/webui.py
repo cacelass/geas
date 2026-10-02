@@ -476,7 +476,7 @@ def render_dashboard(storage: Storage, args: list[str] | None = None) -> str:
         var modal=document.getElementById('join-modal');
         var cmdEl=document.getElementById('join-cmd');
         var token=generateToken();
-        cmdEl.value='export GEAS_TOKEN="'+token+'" && geas user list "'+org.name+'"';
+        cmdEl.value='export GEAS_TOKEN="'+token+'" && geas user list '+JSON.stringify(org.name);
         modal.style.display='flex';
         document.getElementById('join-token').value=token;
         document.getElementById('join-org-id').value=org.id;
