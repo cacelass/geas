@@ -102,6 +102,7 @@ class TestElEsquemaTOOLSBasta:
         "reason": "motivo",
         "message": "mensaje",
         "branch": "main",
+        "org_id": "no-existe",
         "resource_id": "no-existe",
         "repository_id": "no-existe",
         "organization_id": "no-existe",
