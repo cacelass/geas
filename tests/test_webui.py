@@ -94,21 +94,56 @@ class TestRenderDashboard:
         assert "Sin organizaciones" in page
 
     def test_secciones_por_org(self, tmp_path):
-        storage, org, _actor = _seed(tmp_path)
+        storage, org, actor = _seed(tmp_path)
         page = render_dashboard(storage)
         assert org.name in page
         assert "IN_PROGRESS" in page
         assert "geas/YT-104" in page
         assert "TICKET_STARTED" in page  # evento
-        assert "a82f91c" in page  # commit_before en la fila del ticket
+        # La fila del dashboard muestra prioridad, actor y fecha; el commit no
+        # va en la lista desde que la tabla se hizo mas compacta, y su
+        # trazabilidad se comprueba en el detalle (test_detalle_trazabilidad).
+        assert actor.id[:8] in page
+        assert org.id[:8] in page
 
     def test_escapa_html(self, tmp_path):
         storage = Storage(tmp_path / "xss.db")
         org = Organization(name="<script>alert(1)</script>")
-        storage.create_organization(org)
+        storage.create_organization(o := org)
         page = render_dashboard(storage)
+        # El nombre va dentro de un onclick (atributo + literal JS), que son
+        # dos contextos de escapado: html.escape por si solo no basta.
         assert "<script>alert(1)</script>" not in page
         assert "&lt;script&gt;" in page
+        assert o.name not in page
+
+    def test_escapa_nombre_que_rompe_el_atributo(self, tmp_path):
+        """Un nombre con comilla simple cerraba el atributo onclick antes del
+        arreglo; esto es lo que hacia el XSS alcanzable de verdad."""
+        from html.parser import HTMLParser
+
+        storage = Storage(tmp_path / "xss2.db")
+        malicioso = "');alert(1);//"
+        org = Organization(name=malicioso)
+        storage.create_organization(org)
+        page = render_dashboard(storage)
+
+        class _Onclick(HTMLParser):
+            valor = None
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "button" and dict(attrs).get("id") == "join-btn":
+                    self.valor = dict(attrs).get("onclick")
+
+        parser = _Onclick()
+        parser.feed(page)
+        # Lo que importa no es contar comillas sino donde cae el payload: si el
+        # argumento de joinTeam() es exactamente un objeto JSON, entonces todo
+        # el contenido del nombre quedo dentro de literales de cadena y no hay
+        # nada fuera que pueda ejecutar codigo.
+        assert parser.valor is not None
+        argumento = parser.valor.removeprefix("joinTeam(").removesuffix(")")
+        assert json.loads(argumento) == {"id": org.id, "name": malicioso}
 
 
 class TestRenderTicket:

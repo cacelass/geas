@@ -14,6 +14,7 @@ La escritura pasa por la UI (usuarios, dispositivos) y la API/MCP (§26).
 from __future__ import annotations
 
 import html as _html
+import json as _json
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -110,8 +111,13 @@ footer{margin-top:2rem;color:#8b949e;font-size:.8rem;border-top:1px solid #30363
 """
 
 
-def _e(value: object) -> str:
-    return _html.escape(str(value))
+def _e(value: object, *, quote: bool = True) -> str:
+    """Escapa para HTML.
+
+    `quote=True` por defecto porque casi todo el escapado aqui va a atributos
+    (title, onclick, value), donde una comilla sin escapar cambia el atributo.
+    """
+    return _html.escape(str(value), quote=quote)
 
 
 def _iso_now() -> str:
@@ -359,7 +365,10 @@ def render_dashboard(storage: Storage, args: list[str] = None) -> str:
     orgs = storage.list_organizations()
     
     # JavaScript para interactividad
-    _JS = """
+    # Raw string a proposito: las expresiones regulares de JS usan \s y \/, que
+    # en una cadena normal de Python son escapes invalidos (SyntaxWarning) y
+    # dependen de que Python los deje tal cual.
+    _JS = r"""
     <script>
     function extractBody(html) {
         var s=html.indexOf('<header>');
@@ -434,14 +443,14 @@ def render_dashboard(storage: Storage, args: list[str] = None) -> str:
             })
             .catch(e=>alert('Error: '+e));
     }
-    function joinTeam(orgId, orgName) {
+    function joinTeam(org) {
         var modal=document.getElementById('join-modal');
         var cmdEl=document.getElementById('join-cmd');
         var token=generateToken();
-        cmdEl.value='export GEAS_TOKEN="'+token+'" && geas user list "'+orgName+'"';
+        cmdEl.value='export GEAS_TOKEN="'+token+'" && geas user list "'+org.name+'"';
         modal.style.display='flex';
         document.getElementById('join-token').value=token;
-        document.getElementById('join-org-id').value=orgId;
+        document.getElementById('join-org-id').value=org.id;
     }
     function copyCmd() {
         var el=document.getElementById('join-cmd');
@@ -473,13 +482,21 @@ def render_dashboard(storage: Storage, args: list[str] = None) -> str:
     # Header con botón "unirse al equipo"
     join_btn = ""
     if orgs:
-        org_data = "|".join(f'{o.id}:{o.name.replace("|","-")}' for o in orgs)
+        # Los valores van como un unico objeto JSON pasado a joinTeam(), no
+        # interpolados en literales sueltos: antes org.name se metia tal cual
+        # en onclick='joinTeam("id","nombre")', de modo que un nombre con
+        # comilla simple escapaba del atributo y uno con </script> ejecutaba
+        # JavaScript (XSS almacenado, porque el nombre viene de la BD).
+        # json.dumps escapa para JS; _e(quote=True) escapa para el atributo.
+        payload = _e(
+            _json.dumps({"id": orgs[0].id, "name": orgs[0].name}), quote=True
+        )
         join_btn = (
-            "<button onclick='joinTeam(\"{0}\",\"{1}\")' "
+            f"<button id='join-btn' onclick='joinTeam({payload})' "
             "style='background:#58a6ff;color:#0d1117;border:none;padding:.3rem .8rem;"
             "border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;margin-left:1rem'>"
             "Unirse al equipo</button>"
-        ).format(orgs[0].id, orgs[0].name)
+        )
     
     if not orgs:
         body = (
