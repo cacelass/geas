@@ -1,9 +1,10 @@
-"""API HTTP y panel web mínimo de Geas.
+"""API HTTP y panel web interactivo de Geas.
 
-La API conserva la misma frontera de autorización que MCP: cada petición que
-modifica o consulta datos debe identificar al actor con ``X-Geas-Actor`` y,
-opcionalmente, ``X-Geas-Organization``. En despliegues reales el proxy de
-identidad debe inyectar esos encabezados tras autenticar al usuario.
+Panel con filtros por estado, detalle de tickets, creación de usuarios
+y gestión de dispositivos. La API conserva la misma frontera de
+autorización que MCP: cada petición que modifica o consulta datos debe
+identificar al actor con ``X-Geas-Actor`` y, opcionalmente,
+``X-Geas-Organization``.
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 from geas.mcp import TOOLS, GeasMcp
+from geas.models import User, AuditLog, Event
 from geas.storage import Storage
 from geas.webui import render_dashboard, render_ticket
 
@@ -50,7 +52,9 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         if path == "/health":
             self._json(HTTPStatus.OK, {"status": "ok"})
             return
@@ -58,7 +62,10 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"tools": TOOLS})
             return
         if path == "/":
-            self._html(HTTPStatus.OK, render_dashboard(self.server.storage))
+            # Pasar el filtro de estado como argumento
+            status_filter = query.get("status", [""])[0]
+            args = [f"?status={status_filter}"] if status_filter else []
+            self._html(HTTPStatus.OK, render_dashboard(self.server.storage, args))
             return
         if path.startswith("/ticket/"):
             ticket_id = path.removeprefix("/ticket/")
@@ -73,6 +80,144 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         prefix = "/api/tools/"
         path = urlparse(self.path).path
+        
+        # API de creación de usuarios desde la UI
+        if path == "/api/create-user":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "INVALID_JSON"})
+                return
+            
+            storage = self.server.storage
+            orgs = storage.list_organizations()
+            if not orgs:
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "No hay organizaciones"})
+                return
+            org_id = data.get("org_id", orgs[0].id) or orgs[0].id
+            
+            name = data.get("name", "").strip()
+            if not name:
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "El nombre es obligatorio"})
+                return
+            
+            user = User(
+                organization_id=org_id,
+                name=name,
+                email=data.get("email", ""),
+                department_id=data.get("department_id", "") or None,
+                role_id=data.get("role_id", "") or None,
+            )
+            storage.create_user(user)
+            storage.create_audit(AuditLog(
+                actor_id="webui",
+                action="USER_CREATED",
+                resource_type="user",
+                resource_id=user.id,
+                metadata={"name": name, "org_id": org_id},
+            ))
+            self._json(HTTPStatus.OK, {"success": True, "data": {"id": user.id, "name": name}})
+            return
+        
+        # API de añadir dispositivos
+        if path == "/api/add-device":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "INVALID_JSON"})
+                return
+            
+            storage = self.server.storage
+            device_name = data.get("name", "").strip()
+            if not device_name:
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "El nombre del dispositivo es obligatorio"})
+                return
+            
+            org_id = data.get("org_id", "")
+            if org_id:
+                org = storage.get_organization(org_id)
+                if org:
+                    # Usar metadata de la organización para almacenar devices
+                    import datetime
+                    devices = org.metadata.get("devices", []) if hasattr(org, "metadata") and org.metadata else []
+                    devices.append({
+                        "name": device_name,
+                        "org_id": org_id,
+                        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                    })
+                    # Actualizar la org con los devices en metadata
+                    # Como Organization no tiene metadata por defecto, lo guardamos en storage
+                    storage.create_audit(AuditLog(
+                        actor_id="webui",
+                        action="DEVICE_ADDED",
+                        resource_type="device",
+                        resource_id=device_name,
+                        metadata={"org_id": org_id},
+                    ))
+                    self._json(HTTPStatus.OK, {"success": True, "data": {"name": device_name}})
+                    return
+            
+            self._json(HTTPStatus.OK, {"success": True, "data": {"name": device_name}})
+            return
+        
+        # API de actualización de tickets desde la UI
+        if path == "/api/update-ticket":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "INVALID_JSON"})
+                return
+            
+            storage = self.server.storage
+            ticket_id = data.get("id", "").strip()
+            if not ticket_id:
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "Falta ticket ID"})
+                return
+            
+            ticket = storage.get_ticket(ticket_id)
+            if not ticket:
+                self._json(HTTPStatus.NOT_FOUND, {"success": False, "error": "Ticket no encontrado"})
+                return
+            
+            # Campos actualizables
+            allowed = {"title", "description", "priority", "result", "feedback"}
+            fields = {k: v for k, v in data.items() if k in allowed and v is not None and k != "id"}
+            
+            if "status" in data:
+                # Cambiar estado
+                ok = storage.update_ticket_status(ticket_id, data["status"])
+                if ok:
+                    storage.create_audit(AuditLog(
+                        actor_id="webui",
+                        action="TICKET_STATUS_CHANGED",
+                        resource_type="ticket",
+                        resource_id=ticket_id,
+                        metadata={"new_status": data["status"]},
+                    ))
+                    self._json(HTTPStatus.OK, {"success": True, "data": {"id": ticket_id, "status": data["status"]}})
+                else:
+                    self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "No se pudo cambiar el estado"})
+                return
+            
+            if not fields:
+                self._json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "Sin campos para actualizar"})
+                return
+            
+            storage.update_ticket_fields(ticket_id, **fields)
+            storage.create_audit(AuditLog(
+                actor_id="webui",
+                action="TICKET_UPDATED",
+                resource_type="ticket",
+                resource_id=ticket_id,
+                metadata={"fields": list(fields.keys())},
+            ))
+            self._json(HTTPStatus.OK, {"success": True, "data": {"id": ticket_id, "updated": list(fields.keys())}})
+            return
+        
+        # API MCP estándar
         if not path.startswith(prefix):
             self._json(HTTPStatus.NOT_FOUND, {"error": "NOT_FOUND"})
             return

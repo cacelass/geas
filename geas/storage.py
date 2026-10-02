@@ -18,6 +18,7 @@ from geas.models import (
     Agent,
     AuditLog,
     Department,
+    Device,
     Event,
     Execution,
     Organization,
@@ -461,6 +462,52 @@ class Storage:
             (org_id,),
         ).fetchall()
         return [_row_to_agent(r) for r in rows]
+
+    # ─── Devices ──────────────────────────────────────────────────────────
+
+    def create_device(self, device: Device) -> Device:
+        self.conn.execute(
+            "INSERT INTO devices (id, organization_id, name, active, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                device.id,
+                device.organization_id,
+                device.name,
+                device.active,
+                device.created_at,
+            ),
+        )
+        self.conn.commit()
+        return device
+
+    def get_device(self, device_id: str) -> Device | None:
+        row = self.conn.execute(
+            "SELECT * FROM devices WHERE id = ?", (device_id,)
+        ).fetchone()
+        return _row_to_device(row) if row else None
+
+    def get_device_by_name(self, org_id: str, name: str) -> Device | None:
+        """Lookup de dispositivo por nombre en una organización."""
+        row = self.conn.execute(
+            "SELECT * FROM devices WHERE organization_id = ? AND name = ? "
+            "ORDER BY created_at LIMIT 1",
+            (org_id, name),
+        ).fetchone()
+        return _row_to_device(row) if row else None
+
+    def list_devices(self, org_id: str) -> list[Device]:
+        rows = self.conn.execute(
+            "SELECT * FROM devices WHERE organization_id = ? ORDER BY name",
+            (org_id,),
+        ).fetchall()
+        return [_row_to_device(r) for r in rows]
+
+    def deactivate_device(self, device_id: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE devices SET active = 0 WHERE id = ?", (device_id,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     # ─── Autorización ──────────────────────────────────────────────────
 
@@ -1154,6 +1201,14 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    name TEXT NOT NULL,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS repositories (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id),
@@ -1375,6 +1430,16 @@ def _row_to_agent(row: sqlite3.Row) -> Agent:
         harness_id=row["harness_id"],
         active=bool(row["active"]),
         configuration=json.loads(row["configuration"]),
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_device(row: sqlite3.Row) -> Device:
+    return Device(
+        id=row["id"],
+        organization_id=row["organization_id"],
+        name=row["name"],
+        active=bool(row["active"]),
         created_at=row["created_at"],
     )
 
