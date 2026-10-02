@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from geas.mcp import TOOLS, GeasMcp
 from geas.models import AuditLog, User
 from geas.storage import Storage
+from geas.version import report as version_report
 from geas.webui import render_dashboard, render_ticket
 
 
@@ -60,6 +61,19 @@ class GeasHttpHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/tools":
             self._json(HTTPStatus.OK, {"tools": TOOLS})
+            return
+        if path == "/api/version":
+            # Lo que sirve ESTE proceso, no lo que hay en el checkout. Sin esto
+            # no hay forma de saber si un fix esta desplegado (fb4fdbe5).
+            # Envuelto por si acaso: un endpoint de diagnostico que tumba el
+            # servidor no es un endpoint de diagnostico.
+            try:
+                self._json(HTTPStatus.OK, version_report())
+            except Exception as exc:  # noqa: BLE001
+                self._json(
+                    HTTPStatus.OK,
+                    {"stale": None, "error": type(exc).__name__, "message": str(exc)},
+                )
             return
         if path == "/":
             # Pasar el filtro de estado como argumento

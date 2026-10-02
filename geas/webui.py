@@ -20,6 +20,7 @@ from urllib.parse import parse_qs
 
 from geas.models import Repository, Resource, ResourceLock, Ticket, TicketStatus
 from geas.storage import Storage
+from geas.version import report as version_report
 
 _STATUS_ORDER = [
     TicketStatus.FREE,
@@ -58,6 +59,9 @@ td.ticket-id{cursor:pointer;color:#58a6ff}td.ticket-id:hover{text-decoration:und
 td.ticket-title{max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 code{font-family:ui-monospace,monospace;font-size:.8rem;background:#161b22;padding:.05rem .35rem;border-radius:4px}
 .empty{color:#8b949e}
+.banner{margin:.75rem 0;padding:.55rem .8rem;border-radius:6px;font-size:.85rem;border:1px solid #30363d;background:#161b22}
+.banner-warn{border-color:#9e6a03;background:#2d1b00;color:#f0d68a}
+.banner-info{border-color:#30363d;color:#8b949e}
 .stats{display:flex;gap:.5rem;flex-wrap:wrap;margin:.5rem 0}
 .stats span{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:.25rem .7rem;font-size:.8rem}
 .stats .count{font-weight:700}
@@ -243,6 +247,33 @@ def _active_locks(
             if lock:
                 locks.append((lock, resource, repo))
     return locks
+
+
+def _version_banner() -> str:
+    """Aviso si el proceso no sirve el codigo que hay en el checkout.
+
+    Silencioso cuando todo cuadra: un aviso permanente deja de leerse, y este
+    solo existe para el caso que de verdad importa (fb4fdbe5).
+    """
+    try:
+        info = version_report()
+    except Exception:  # noqa: BLE001
+        return ""
+    servido, head = info.get("served_commit"), info.get("checkout_head")
+    if info.get("stale") is True:
+        return (
+            "<div class='banner banner-warn'>Este proceso sirve <code>"
+            f"{_e((servido or '?')[:8])}</code> pero el checkout esta en <code>"
+            f"{_e((head or '?')[:8])}</code>: hay codigo sin desplegar. "
+            "Reinicia el servidor para que sirva el actual.</div>"
+        )
+    if servido is None or head is None:
+        return (
+            "<div class='banner banner-info'>No se puede decir que codigo sirve "
+            "este proceso: no se encuentra el checkout de git. Sin esto, un fix "
+            "puede quedar sin desplegar sin que nadie lo note.</div>"
+        )
+    return ""
 
 
 def _priority_label(p: int) -> str:
@@ -500,7 +531,8 @@ def render_dashboard(storage: Storage, args: list[str] | None = None) -> str:
         body = (
             "<header><h1>Geas</h1>"
             "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p></header>"
-            "<p class='empty'>Sin organizaciones todavía. Crea una con "
+            + _version_banner()
+            + "<p class='empty'>Sin organizaciones todavía. Crea una con "
             "<code>geas init &quot;Mi Org&quot;</code>.</p>"
         )
     else:
@@ -511,6 +543,7 @@ def render_dashboard(storage: Storage, args: list[str] | None = None) -> str:
             "<header><h1>Geas</h1>"
             "<p>Quién puede hacer qué, sobre qué recurso, cuándo — y qué ha ocurrido.</p>"
             + join_btn + "</header>"
+            + _version_banner()
             + sections
         )
     
