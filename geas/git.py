@@ -101,6 +101,51 @@ class GitProvider(ABC):
     def diff(self, base: str, target: str) -> DiffResult: ...
 
 
+class RemoteView:
+    """Lo que el remoto dice de verdad, y de dónde sale la respuesta.
+
+    `ahead=None` significa **no se pudo saber**, que no es lo mismo que 0: si
+    el remoto no se pudo consultar, «no hay nada sin publicar» es una
+    invención. Por eso el campo va aparte y siempre se dice de dónde salió
+    (`basis`), para que quien llama pueda decidir si le vale (§42).
+    """
+
+    __slots__ = ("ahead", "basis", "behind", "branch", "note", "remote_sha")
+
+    def __init__(
+        self,
+        branch: str,
+        remote_sha: str | None,
+        ahead: int | None,
+        behind: int | None,
+        basis: str,
+        note: str = "",
+    ):
+        self.branch = branch
+        self.remote_sha = remote_sha
+        self.ahead = ahead
+        self.behind = behind
+        self.basis = basis  # "remote" | "cached" | "unknown"
+        self.note = note
+
+    @property
+    def has_unpublished(self) -> bool | None:
+        if self.ahead is None:
+            return None
+        return self.ahead > 0
+
+    def as_dict(self) -> dict:
+        return {
+            "branch": self.branch,
+            "remote_sha": self.remote_sha,
+            "ahead": self.ahead,
+            "behind": self.behind,
+            "has_unpublished": self.has_unpublished,
+            "basis": self.basis,
+            "note": self.note,
+        }
+
+
 class LocalGitProvider(GitProvider):
     """Proveedor local sobre el CLI de git (MVP)."""
 
@@ -112,6 +157,109 @@ class LocalGitProvider(GitProvider):
         if self.repo_path:
             cmd += ["-C", self.repo_path]
         return subprocess.run(cmd + args, capture_output=True, text=True, check=False)
+
+    def _remote_sha(self, branch: str) -> tuple[str | None, bool]:
+        """(sha, consultation_ok) de `branch` en el remoto real.
+
+        `ls-remote` va a la red: no usa la caché. El segundo valor distingue
+        dos `None` que significan cosas distintas: **no se pudo preguntar**
+        (sin red, remoto caído) de **se preguntó y la rama no está**. Antes el
+        código no distinguía, y por eso un `None` de red se contestaba como
+        «la rama no existe en el remoto» (§ ticket 5346f1c1).
+        """
+        r = self._run(["ls-remote", "origin", f"refs/heads/{branch}"])
+        if r.returncode != 0:
+            return None, False
+        for line in r.stdout.splitlines():
+            sha, _, ref = line.partition("\t")
+            if ref.strip() == f"refs/heads/{branch}":
+                return sha.strip(), True
+        return None, True
+
+    def _unpublished_count(self, ref: str) -> int | None:
+        """Commits de `ref` que no están en ninguna rama del remoto.
+
+        No cuenta el historial entero de la rama: si la rama salió de `main`, los
+        commits de `main` **sí** están publicados aunque la rama nueva no exista
+        todavía en el remoto. Por eso `--not --remotes=origin` y no
+        `rev-list --count <ref>` a secas (que daba 3 donde había 2 sin publicar).
+        """
+        r = self._run(
+            ["rev-list", "--count", ref, "--not", "--remotes=origin"]
+        )
+        if r.returncode != 0:
+            return None
+        return int(r.stdout.strip())
+
+    def _counts_vs(
+        self, ref: str, remote_sha: str | None
+    ) -> tuple[int | None, int | None, str, str]:
+        """(ahead, behind, basis, note) de `ref` contra el SHA remoto.
+
+        Requiere que el objeto del remoto esté en local para contar; si no está,
+        no se puede contar y se dice, en vez de suponer 0.
+        """
+        if remote_sha is None:
+            return None, None, "unknown", (
+                "no se pudo consultar el remoto (¿sin red?); ahead/behind "
+                "desconocidos"
+            )
+        have = self._run(["cat-file", "-e", f"{remote_sha}^{{commit}}"])
+        if have.returncode != 0:
+            return None, None, "unknown", (
+                f"el remoto está en {remote_sha[:8]} pero ese commit no está en "
+                "local; hace falta un fetch para comparar (este método no muta "
+                "el repo, así que no lo hace por su cuenta)"
+            )
+        ahead = self._run(["rev-list", "--count", f"{remote_sha}..{ref}"])
+        behind = self._run(["rev-list", "--count", f"{ref}..{remote_sha}"])
+        if ahead.returncode != 0 or behind.returncode != 0:
+            return None, None, "unknown", "git no pudo contar los commits"
+        return int(ahead.stdout.strip()), int(behind.stdout.strip()), "remote", ""
+
+    def remote_view(self, branch: str | None = None) -> RemoteView:
+        """Como está `branch` **respecto al remoto de verdad** (5346f1c1).
+
+        `branch=None` significa «la rama actual», y se resuelve por su nombre;
+        ya no se ignora el parámetro.
+        """
+        if not branch:
+            head = self._run(["rev-parse", "--abbrev-ref", "HEAD"])
+            branch = head.stdout.strip() if head.returncode == 0 else ""
+        if not branch or branch == "HEAD":
+            return RemoteView(
+                "", None, None, None, "unknown",
+                "no se pudo determinar la rama (repo sin commits, o detached HEAD)",
+            )
+        local = self._run(["rev-parse", "--verify", f"{branch}^{{commit}}"])
+        if local.returncode != 0:
+            return RemoteView(
+                branch, None, None, None, "unknown",
+                f"la rama '{branch}' no existe en local",
+            )
+        remote_sha, ok = self._remote_sha(branch)
+        if not ok:
+            return RemoteView(
+                branch, None, None, None, "unknown",
+                f"no se pudo consultar origin para '{branch}' (¿sin red?): "
+                "ahead/behind desconocidos, que no es lo mismo que 0",
+            )
+        if remote_sha is None:
+            # Se preguntó y la rama no está: lo suyo no está publicado, pero
+            # sólo lo que no esté ya en otra rama remota.
+            n = self._unpublished_count(branch)
+            if n is not None:
+                return RemoteView(
+                    branch, None, n, 0, "remote",
+                    f"'{branch}' no existe en origin: {n} commit(s) sin publicar "
+                    "(sin contar los que ya están en otras ramas remotas)",
+                )
+            return RemoteView(
+                branch, None, None, None, "unknown",
+                f"'{branch}' no existe en origin y git no pudo contar los commits",
+            )
+        ahead, behind, basis, note = self._counts_vs(branch, remote_sha)
+        return RemoteView(branch, remote_sha, ahead, behind, basis, note)
 
     # ─── Operaciones ───────────────────────────────────────────────────
 
@@ -253,31 +401,62 @@ class LocalGitProvider(GitProvider):
     def has_unpublished(self, branch: str | None = None) -> bool:
         """¿Hay trabajo sin publicar para este repo/branch?
 
-        «Sin publicar» significa commits locales por delante de origin (ahead > 0).
-        fetch() es opcional: quien pregunta puede llamar sync antes; este método
-        solo lee lo que hay, sin lanzar.
+        **No deprecado**: devuelve `False` cuando no se puede saber, y eso es
+        una mentira (0 no es «no lo sé»). La razón de que exista es el
+        protocolo viejo; para la respuesta con su `basis` y su
+        `ahead=None` cuando toca, usa `remote_view()`.
         """
-        try:
-            s = self.status()
-        except (OSError, subprocess.SubprocessError, RuntimeError):
-            return False
-        return s.ahead > 0
+        return self.remote_view(branch).has_unpublished is True
 
     def is_published(self, commit: str) -> bool:
         """¿Está este commit visible en alguna rama del remoto (origin)?
 
-        Se hace una consulta por commit remoto: si existe, está publicado. No
-        depende del branch local. En caso de fallo, devuelve `False` (no inventa).
+        Pregunta **al remoto**: hace `fetch` y luego mira si el commit es
+        ancestro de algún puntero remoto. Antes usaba `branch -r --contains`
+        sobre las refs cacheadas, que respondía sobre el estado del último
+        fetch que hubiera pasado, y caía a `ls-remote origin <sha>`, que para
+        un sha (que no es una ref) no devuelve nada (§ ticket 5346f1c1).
+
+        Se mantiene el `bool` del protocolo: `False` significa «no está
+        publicado» y también «no se pudo comprobar», porque el tipo no permite
+        distinguirlo. `published_view()` sí distingue.
+        """
+        v = self.published_view(commit)
+        return v is True
+
+    def published_view(self, commit: str) -> bool | None:
+        """Como `is_published` pero con `None` para «no se pudo comprobar».
+
+        La fuente de verdad es `ls-remote` (va a la red). El `fetch` +
+        `branch -r --contains` se usa sólo **si el fetch ha funcionado**: con el
+        fetch fallido, `branch -r --contains` seguiría contestando con las refs
+        cacheadas y devolvería la respuesta vieja sin avisar — que es
+        exactamente el bug que arregla este ticket.
         """
         if not commit:
-            return False
-        # --exit-code devuelve 0 si el commit existe en el remoto, 2 si no
-        r = self._run(["branch", "-r", "--contains", commit])
-        if r.returncode == 0 and r.stdout.strip():
-            return True
-        # fallback: git ls-remote
-        r2 = self._run(["ls-remote", "origin", commit])
-        return bool(r2.returncode == 0 and r2.stdout.strip())
+            return None
+        if self._run(["cat-file", "-e", f"{commit}^{{commit}}"]).returncode != 0:
+            return None
+        fetched = self.fetch()
+        if fetched:
+            r = self._run(["branch", "-r", "--contains", commit])
+            if r.returncode == 0 and r.stdout.strip():
+                return True
+        # `ls-remote` sin argumentos no usa caché: lista los punteros reales.
+        # Con esto se puede decir «no está publicado» sin fetch, porque si el
+        # commit no aparece en ningún puntero remoto es que no está.
+        r2 = self._run(["ls-remote", "origin"])
+        if r2.returncode != 0:
+            return None  # sin red: no se sabe, no se inventa
+        for line in r2.stdout.splitlines():
+            sha, _, _ref = line.partition("\t")
+            if sha.strip() == commit:
+                return True
+        if not fetched:
+            # Preguntamos al remoto y el commit no es un puntero, pero no hemos
+            # podido comprobar si es ancestro de alguno. No se afirma.
+            return None
+        return False
 
     def rollback(self, commit: str) -> bool:
         """Restaurar el estado de `commit` sin destruir historial (§11).

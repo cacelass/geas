@@ -191,3 +191,147 @@ class TestStatusNoConcatenaAheadYBehind:
         s = LocalGitProvider(str(work)).status()
         assert (s.ahead, s.behind) == (1, 1)
         assert LocalGitProvider(str(work)).has_unpublished() is True
+
+
+class TestRemoteViewConsultaElRemotoDeVerdad:
+    """`has_unpublished` contestaba sobre las refs cacheadas (5346f1c1).
+
+    Medido con dos clones y un remoto real: si otro clon publica el commit que
+    yo tenía sin pushear, HEAD local == remoto real pero `origin/main` en mi
+    caché sigue en el valor viejo, y `status().ahead` devolvía 1. Es decir:
+    «tienes trabajo sin publicar» para siempre, en cada consulta.
+    """
+
+    @pytest.fixture
+    def escena(self, tmp_path):
+        """(work, otro, git, commit) — remoto bare con un commit y dos clones."""
+        import pathlib
+        import subprocess
+
+        env = {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+            "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(tmp_path),
+        }
+
+        def git(args, cwd):
+            return subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
+                                  capture_output=True, text=True)
+
+        def commit(cwd, msg, txt):
+            pathlib.Path(cwd, "f.txt").write_text(txt)
+            git(["add", "-A"], cwd)
+            git(["commit", "-qm", msg], cwd)
+
+        bare, work = tmp_path / "b.git", tmp_path / "w"
+        work.mkdir()
+        git(["init", "-q", "--bare", "-b", "main", str(bare)], tmp_path)
+        for a in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e"],
+                  ["config", "user.name", "t"]):
+            git(a, work)
+        commit(work, "c1", "a")
+        git(["remote", "add", "origin", str(bare)], work)
+        git(["push", "-q", "-u", "origin", "main"], work)
+        otro = tmp_path / "o"
+        git(["clone", "-q", "-b", "main", str(bare), str(otro)], tmp_path)
+        for a in (["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+            git(a, otro)
+        return work, otro, git, commit
+
+    def test_otro_clon_publica_mi_commit_y_deja_de_decir_que_no(self, escena):
+        """El caso exacto del falso positivo."""
+        work, otro, git, commit = escena
+        commit(work, "c2", "b")            # sin pushear
+        git(["fetch", "-q"], otro)
+        git(["merge", "-q", "--ff-only", "origin/main"], otro)
+        commit(otro, "c2", "b")            # otro publica MI commit
+        git(["push", "-q", "origin", "main"], otro)
+
+        # La caché local sigue mintiendo: origin/main aqui no se ha movido.
+        assert git(["rev-parse", "origin/main"], work).stdout.strip() != git(
+            ["rev-parse", "HEAD"], work).stdout.strip()
+        g = LocalGitProvider(str(work))
+        assert g.status().ahead == 1        # elcached: miente
+        v = g.remote_view()                 # el remoto: acierta
+        assert v.ahead == 0
+        assert v.has_unpublished is False
+        assert v.basis == "remote"
+
+    def test_lo_que_mismo_no_pusheado_sigue_visto(self, escena):
+        work, _otro, _git, commit = escena
+        commit(work, "c2", "b")
+        v = LocalGitProvider(str(work)).remote_view()
+        assert v.ahead == 1
+        assert v.has_unpublished is True
+
+    def test_rama_que_no_existe_en_local_no_es_cero(self, escena):
+        work, _otro, _git, _commit = escena
+        v = LocalGitProvider(str(work)).remote_view("no-existe")
+        assert v.basis == "unknown"
+        assert v.ahead is None              # no saber, no es 0
+        assert v.has_unpublished is None
+        assert "no existe en local" in v.note
+
+    def test_rama_nueva_en_local_no_publicada_cuenta_commits(self, escena):
+        """Rama que aún no existe en origin: todo lo suyo está sin publicar."""
+        work, _otro, git, commit = escena
+        git(["checkout", "-q", "-b", "feature"], work)
+        commit(work, "f1", "x")
+        commit(work, "f2", "y")
+        v = LocalGitProvider(str(work)).remote_view("feature")
+        assert v.remote_sha is None
+        assert v.ahead == 2
+        assert v.has_unpublished is True
+        assert "no existe en origin" in v.note
+
+    def test_la_rama_se_honra_de_verdad(self, escena):
+        """`branch` no se tira: main y feature dan números distintos."""
+        work, _otro, git, commit = escena
+        git(["checkout", "-q", "-b", "feature"], work)
+        commit(work, "f1", "x")
+        main_v = LocalGitProvider(str(work)).remote_view("main")
+        feat_v = LocalGitProvider(str(work)).remote_view("feature")
+        assert (main_v.ahead, feat_v.ahead) == (0, 1)
+
+    def test_remoto_inaccesible_dice_desconocido(self, escena, tmp_path):
+        """Sin red: basis='unknown', no un 0 disfrazado de respuesta."""
+        work, _otro, _git, _commit = escena
+        g = LocalGitProvider(str(work))
+        g._run = _sin_remoto(g._run)   # ls-remote y fetch fallan: sin red
+        v = g.remote_view()
+        assert v.ahead is None
+        assert v.has_unpublished is None
+        assert v.basis == "unknown"
+        assert v.note
+
+    def test_is_published_con_remoto_real(self, escena):
+        work, _otro, git, commit = escena
+        publicado = git(["rev-parse", "HEAD"], work).stdout.strip()
+        commit(work, "c2", "b")
+        local = git(["rev-parse", "HEAD"], work).stdout.strip()
+        g = LocalGitProvider(str(work))
+        assert g.published_view(publicado) is True
+        assert g.published_view(local) is False
+
+    def test_is_published_sin_remoto_no_inventa_false(self, escena):
+        work, _otro, git, _commit = escena
+        head = git(["rev-parse", "HEAD"], work).stdout.strip()
+        g = LocalGitProvider(str(work))
+        g._run = _sin_remoto(g._run)
+        assert g.published_view(head) is None
+
+
+def _sin_remoto(run_original):
+    """Envuelve `_run` para que ls-remote/fetch fallen como si no hubiera red.
+
+    Se asigna como atributo de instancia, así que no recibe `self` (un atributo
+    de instancia no actúa de descriptor): se cierra sobre el método ligado.
+    """
+    import subprocess
+
+    def _run(args):
+        if args and args[0] in ("ls-remote", "fetch"):
+            return subprocess.CompletedProcess(args, 128, "", "sin red")
+        return run_original(args)
+
+    return _run

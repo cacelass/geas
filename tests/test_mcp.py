@@ -7,6 +7,7 @@ bloqueo de otro ticket, completar y liberar.
 
 from __future__ import annotations
 
+import json
 from typing import ClassVar
 
 import pytest
@@ -860,10 +861,42 @@ class TestIsPublishedNoSeSaltaLaAutorizacion:
 
         head = _run_git(checkout, "rev-parse", "HEAD")
         r = mcp.is_published(head, repo_local.id)
+        # Sin remoto no se puede comprobar, y no se devuelve `false`: el 6912f060
+        # lo daba, y por eso mintió durante tanto tiempo.
+        assert r["success"] is False
+        assert "No se pudo comprobar" in r["error"]
+        assert "published" not in (r.get("data") or {})
+        json.dumps(r)  # y la respuesta es serializable
+
+    def test_con_remoto_real_devuelve_el_repository_id(self, mcp, storage, org, tmp_path):
+        """Con remoto de verdad: published=true y el repo que se consultó."""
+        checkout = _checkout_con_remoto(tmp_path)
+        repo_local = Repository(organization_id=org.id, name="con-remoto",
+                                provider="local", url=str(checkout))
+        storage.create_repository(repo_local)
+
+        publicado = _run_git(checkout, "rev-parse", "HEAD")
+        r = mcp.is_published(publicado, repo_local.id)
         assert r["success"] is True
-        assert r["data"]["repository_id"] == repo_local.id
-        assert r["data"]["commit"] == head
-        # Sin remoto configurado `is_published` no puede affirmar nada (§42).
+        assert r["data"] == {
+            "commit": publicado,
+            "repository_id": repo_local.id,
+            "published": True,
+            "basis": "remote",
+        }
+
+    def test_commit_local_sin_publicar_dice_false(self, mcp, storage, org, tmp_path):
+        checkout = _checkout_con_remoto(tmp_path)
+        repo_local = Repository(organization_id=org.id, name="con-remoto2",
+                                provider="local", url=str(checkout))
+        storage.create_repository(repo_local)
+        (checkout / "f.txt").write_text("segundo")
+        _run_git(checkout, "add", "-A")
+        _run_git(checkout, "commit", "-qm", "local")
+        local = _run_git(checkout, "rev-parse", "HEAD")
+
+        r = mcp.is_published(local, repo_local.id)
+        assert r["success"] is True
         assert r["data"]["published"] is False
 
 
@@ -892,8 +925,14 @@ class TestHasUnpublishedArregladoElAtrapo:
         assert r["success"] is False
         assert r["error"] == "FORBIDDEN"
 
-    def test_checkout_local_sin_remoto_no_es_unpublished_falso(self, mcp, storage, org, tmp_path):
-        """Sin `origin`, `ahead` es 0: no hay trabajo sin publicar que afirmar."""
+    def test_checkout_sin_remoto_dice_desconocido_y_no_cero(self, mcp, storage, org, tmp_path):
+        """Sin remoto configurado no se puede saber, y no se dice que 0.
+
+        Este test afirmaba antes `ahead: 0` / `has_unpublished: False` "porque no
+        hay nada sin publicar". Es exactamente la mentira del 5346f1c1: había un
+        commit sin publicar y se respondía 0. Ahora `ls-remote` falla (no hay
+        `origin`), que es distinto de «la rama no está en el remoto».
+        """
         checkout = tmp_path / "co2"
         _git_repo_real(checkout)
         repo_local = Repository(organization_id=org.id, name="local2",
@@ -901,8 +940,71 @@ class TestHasUnpublishedArregladoElAtrapo:
         storage.create_repository(repo_local)
         r = mcp.has_unpublished(repo_local.id)
         assert r["success"] is True
-        assert r["data"] == {"repository_id": repo_local.id, "ahead": 0,
-                             "has_unpublished": False}
+        assert r["data"]["basis"] == "unknown"
+        assert r["data"]["ahead"] is None
+        assert r["data"]["has_unpublished"] is None
+        assert r["data"]["note"]
+
+    def test_remoto_real_dice_si_hay_trabajo_sin_publicar(self, mcp, storage, org, tmp_path):
+        checkout = _checkout_con_remoto(tmp_path)
+        repo_local = Repository(organization_id=org.id, name="con-remoto3",
+                                provider="local", url=str(checkout))
+        storage.create_repository(repo_local)
+        r = mcp.has_unpublished(repo_local.id)
+        assert r["data"] == {
+            "repository_id": repo_local.id, "branch": "main",
+            "remote_sha": _run_git(checkout, "rev-parse", "HEAD"),
+            "ahead": 0, "behind": 0, "has_unpublished": False,
+            "basis": "remote", "note": "",
+        }
+
+        (checkout / "f.txt").write_text("otro")
+        _run_git(checkout, "add", "-A")
+        _run_git(checkout, "commit", "-qm", "sin pushear")
+        r2 = mcp.has_unpublished(repo_local.id)
+        assert r2["data"]["ahead"] == 1
+        assert r2["data"]["has_unpublished"] is True
+        assert r2["data"]["basis"] == "remote"
+
+    def test_rama_inexistente_no_se_confunde_con_cero(self, mcp, storage, org, tmp_path):
+        """Pedir una rama que no existe es un error con nombre, no un 0."""
+        checkout = tmp_path / "co3"
+        _git_repo_real(checkout)
+        repo_local = Repository(organization_id=org.id, name="local3",
+                                provider="local", url=str(checkout))
+        storage.create_repository(repo_local)
+        r = mcp.has_unpublished(repo_local.id, branch="no-existe")
+        assert r["success"] is True
+        assert r["data"]["basis"] == "unknown"
+        assert r["data"]["ahead"] is None
+        assert r["data"]["has_unpublished"] is None
+        assert "no existe en local" in r["data"]["note"]
+
+
+def _checkout_con_remoto(tmp_path):
+    """Repo con un remoto real (bare) y un commit ya pusheado."""
+    import subprocess
+
+    bare, work = tmp_path / "r.git", tmp_path / "rw"
+    work.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+           "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(tmp_path)}
+
+    def run(args, cwd):
+        return subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
+                              capture_output=True)
+
+    run(["init", "-q", "--bare", "-b", "main", str(bare)], tmp_path)
+    for a in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e"],
+              ["config", "user.name", "t"]):
+        run(a, work)
+    (work / "f.txt").write_text("uno")
+    run(["add", "-A"], work)
+    run(["commit", "-qm", "c1"], work)
+    run(["remote", "add", "origin", str(bare)], work)
+    run(["push", "-q", "-u", "origin", "main"], work)
+    return work
 
 
 def _run_git(cwd, *args) -> str:

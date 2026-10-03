@@ -797,14 +797,16 @@ class GeasMcp:
     def has_unpublished(self, repository_id: str, branch: str | None = None) -> dict:
         """¿Hay trabajo sin publicar en este repo?
 
-        «Sin publicar» = commits locales por delante de origin (ahead > 0). No
-        obliga a hacer fetch: status() ya lee el upstream local si existe.
-        Requiere permiso `git:read` sobre el repo.
+        «Sin publicar» = commits locales por delante del remoto **real**: se
+        pregunta con `ls-remote`, no con las refs cacheadas del último fetch
+        (§ ticket 5346f1c1). Antes `status()` leía `origin/<branch>` local, así
+        que si otro clon publica tu commit, el método seguía diciendo que lo
+        tenías sin publicar, en cada consulta.
 
-        `branch` se acepta por contrato pero **se ignora**: `status()` sólo
-        sabe de la rama actual. No se finge lo contrario (quedó como
-        `if branch: pass`, un no-op que parecía un olvido); dar respuesta por
-        cualquier rama es otro ticket.
+        `branch` se honra de verdad. La respuesta incluye `basis` (de dónde sale
+        el número) y `ahead=None` + `has_unpublished=None` cuando no se pudo
+        consultar el remoto: no saber no es cero.
+        Requiere permiso `git:read` sobre el repo.
         """
         if not repository_id:
             return _err("repository_id requerido")
@@ -829,10 +831,10 @@ class GeasMcp:
         except Exception as exc:  # noqa: BLE001
             return _err(f"No es un repo Git en {checkout}: {exc}")
         try:
-            ahead = g.status().ahead
+            view = g.remote_view(branch)
         except Exception as exc:  # noqa: BLE001
-            return _err(f"git status falló en {checkout}: {exc}")
-        return _ok({"repository_id": repository_id, "ahead": ahead, "has_unpublished": ahead > 0})
+            return _err(f"git falló en {checkout}: {type(exc).__name__}: {exc}")
+        return _ok({"repository_id": repository_id, **view.as_dict()})
 
     def is_published(self, commit: str, repository_id: str | None = None) -> dict:
         """¿Está este commit visible en alguna rama del remoto (origin)?
@@ -872,14 +874,21 @@ class GeasMcp:
         except Exception as exc:  # noqa: BLE001
             return _err(f"No se pudo inicializar git: {exc}")
         try:
-            published = g.is_published(commit)
+            published = g.published_view(commit)
         except Exception as exc:  # noqa: BLE001
             return _err(f"git falló: {exc}")
+        if published is None:
+            return _err(
+                f"No se pudo comprobar si {commit[:8]} está publicado "
+                f"(¿sin red, o el commit no existe en este checkout?); "
+                "no se devuelve published:false porque sería inventarlo (§42)"
+            )
         return _ok(
             {
                 "commit": commit,
                 "repository_id": repository_id,
                 "published": published,
+                "basis": "remote",
             }
         )
 
