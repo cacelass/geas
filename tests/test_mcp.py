@@ -771,3 +771,160 @@ class TestCrearTicketEsAtomico:
             "AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.id = a.resource_id)"
         ).fetchall()
         assert [row["resource_id"] for row in huerfanos] == []
+
+
+class TestIsPublishedNoSeSaltaLaAutorizacion:
+    """is_published exigía `git:read` sólo si le pasabas `repository_id` (6912f060).
+
+    Sin ese parámetro caía a `LocalGitProvider()` sobre el cwd del servicio
+    —`~/.local/share/geas`, que no es un checkout— y contestaba `published:
+    False` sin comprobar ningún permiso. Con `repository_id` tampoco funcionaba:
+    hacía `repo.path`, campo que no existe en el dataclass `Repository`
+    (`AttributeError` → 500). Y no había ni un test de los dos métodos.
+    """
+
+    SHA: ClassVar[str] = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+    @pytest.fixture
+    def repo_sin_permiso(self, storage, org):
+        """Repo de otra organización que el actor NO puede leer."""
+        otra = Organization(name="Otra")
+        storage.create_organization(otra)
+        repo = Repository(organization_id=otra.id, name="secreto", url="git@x:o/s.git")
+        storage.create_repository(repo)
+        return repo
+
+    def test_sin_repository_id_falla_y_no_filtra_nada(self, mcp, storage):
+        """Sin repository_id no se ejecuta git ni se devuelve `published`."""
+        r = mcp.is_published(self.SHA)
+        assert r["success"] is False
+        assert "repository_id" in r["error"]
+        # Lo importante: ni un `published` (antes venía False del cwd).
+        assert "published" not in r.get("data", {})
+
+    def test_repository_id_explicito_null_tambien_falla(self, mcp):
+        """`repository_id=None` no es una vía para saltarse la autorización."""
+        r = mcp.is_published(self.SHA, None)
+        assert r["success"] is False
+        assert "repository_id" in r["error"]
+
+    def test_commit_vacio_se_comprueba_antes(self, mcp, repo_sin_permiso):
+        r = mcp.is_published("", repo_sin_permiso.id)
+        assert r["success"] is False
+        assert "commit requerido" in r["error"]
+
+    def test_repo_inexistente_dice_que_no_existe(self, mcp):
+        r = mcp.is_published(self.SHA, "00000000-0000-0000-0000-000000000000")
+        assert r["success"] is False
+        assert "no existe" in r["error"]
+
+    def test_sin_git_read_devuelve_forbidden(self, mcp, repo_sin_permiso, storage):
+        """El caso real del bypass: actor legítimo, repo que no puede leer."""
+        rol_pobre = Role(organization_id=repo_sin_permiso.organization_id,
+                         name="sin-git-read", permissions=["ticket:read"])
+        storage.create_role(rol_pobre)
+        pobre = Agent(id="pobre", organization_id=repo_sin_permiso.organization_id,
+                      name="pobre", provider="test", model="test",
+                      role_id=rol_pobre.id)
+        storage.create_agent(pobre)
+        mcp_pobre = GeasMcp(storage, actor_id=pobre.id,
+                            org_id=repo_sin_permiso.organization_id)
+
+        r = mcp_pobre.is_published(self.SHA, repo_sin_permiso.id)
+        assert r["success"] is False
+        assert r["error"] == "FORBIDDEN"
+        assert r["data"]["permission"] == "git:read"
+
+    def test_con_permiso_y_repo_github_falla_claro_no_500(self, mcp, repo):
+        """`provider=github`: no hay checkout y hay que decirlo, no inventar.
+
+        Antes esto reventaba con `AttributeError: 'Repository' object has no
+        attribute 'path'`, porque el dataclass Repository no tiene `path`.
+        """
+        repo.provider = "github"
+        repo.url = "git@github.com:o/r.git"
+        r = mcp.is_published(self.SHA, repo.id)
+        assert r["success"] is False
+        assert "checkout local" in r["error"]
+        assert "has_unpublished" not in (r.get("data") or {})
+        assert "AttributeError" not in r["error"]
+        assert "published" not in (r.get("data") or {})
+
+    def test_devuelve_el_repository_id_que_se_uso(self, mcp, storage, org, tmp_path):
+        """Con checkout local real responde de verdad y cita el repo consultado."""
+        checkout = tmp_path / "co"
+        _git_repo_real(checkout)
+        repo_local = Repository(organization_id=org.id, name="local",
+                                provider="local", url=str(checkout))
+        storage.create_repository(repo_local)
+
+        head = _run_git(checkout, "rev-parse", "HEAD")
+        r = mcp.is_published(head, repo_local.id)
+        assert r["success"] is True
+        assert r["data"]["repository_id"] == repo_local.id
+        assert r["data"]["commit"] == head
+        # Sin remoto configurado `is_published` no puede affirmar nada (§42).
+        assert r["data"]["published"] is False
+
+
+class TestHasUnpublishedArregladoElAtrapo:
+    """El `repo.path` inexistente también reventaba has_unpublished."""
+
+    def test_provider_github_dice_que_no_hay_checkout(self, mcp, repo):
+        repo.provider = "github"
+        repo.url = "git@github.com:o/r.git"
+        r = mcp.has_unpublished(repo.id)
+        assert r["success"] is False
+        assert "checkout local" in r["error"]
+        assert "has_unpublished" not in (r.get("data") or {})
+
+    def test_sin_git_read_devuelve_forbidden(self, mcp, storage, org):
+        otra = Organization(name="Otra2")
+        storage.create_organization(otra)
+        r2 = Repository(organization_id=otra.id, name="s", url="git@x:o/s.git")
+        storage.create_repository(r2)
+        rol = Role(organization_id=otra.id, name="pobre", permissions=["ticket:read"])
+        storage.create_role(rol)
+        a = Agent(id="pobre2", organization_id=otra.id, name="p", provider="t",
+                  model="t", role_id=rol.id)
+        storage.create_agent(a)
+        r = GeasMcp(storage, actor_id=a.id, org_id=otra.id).has_unpublished(r2.id)
+        assert r["success"] is False
+        assert r["error"] == "FORBIDDEN"
+
+    def test_checkout_local_sin_remoto_no_es_unpublished_falso(self, mcp, storage, org, tmp_path):
+        """Sin `origin`, `ahead` es 0: no hay trabajo sin publicar que afirmar."""
+        checkout = tmp_path / "co2"
+        _git_repo_real(checkout)
+        repo_local = Repository(organization_id=org.id, name="local2",
+                                provider="local", url=str(checkout))
+        storage.create_repository(repo_local)
+        r = mcp.has_unpublished(repo_local.id)
+        assert r["success"] is True
+        assert r["data"] == {"repository_id": repo_local.id, "ahead": 0,
+                             "has_unpublished": False}
+
+
+def _run_git(cwd, *args) -> str:
+    import subprocess
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _git_repo_real(path) -> None:
+    """Crea un repo git con un commit, sin remoto."""
+    import subprocess
+    path.mkdir(parents=True, exist_ok=True)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+           "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(path)}
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e"],
+                 ["config", "user.name", "t"], ["add", "-A"]):
+        subprocess.run(["git", *args], cwd=path, env=env, check=True,
+                       capture_output=True)
+    (path / "f.txt").write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=path, env=env, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "c"], cwd=path, env=env, check=True,
+                   capture_output=True)

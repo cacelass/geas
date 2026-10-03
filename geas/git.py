@@ -137,12 +137,21 @@ class LocalGitProvider(GitProvider):
                 parts = meta.split()
                 branch = parts[0].split("...")[0]
                 if len(parts) > 1 and parts[1].startswith("["):
-                    info = " ".join(parts[1:])
-                    info = info.strip("[]")
-                    if "ahead" in info:
-                        ahead = int("".join(c for c in info if c.isdigit()))
-                    if "behind" in info:
-                        behind = int("".join(c for c in info.split("behind",1)[-1] if c.isdigit()))
+                    info = " ".join(parts[1:]).strip("[]")
+                    # "ahead 1, behind 2": se parte por comas y se lee cada
+                    # contador por separado. Antes se hacía
+                    # int("".join(dígitos de todo el texto)), que con
+                    # ahead y behind a la vez concatenaba "1" y "1" y
+                    # devolvía ahead=11 (6912f060).
+                    for campo in info.split(","):
+                        campo = campo.strip()
+                        digitos = "".join(c for c in campo if c.isdigit())
+                        if not digitos:
+                            continue
+                        if campo.startswith("ahead"):
+                            ahead = int(digitos)
+                        elif campo.startswith("behind"):
+                            behind = int(digitos)
             elif line.startswith("??"):
                 untracked.append(line[3:])
             else:

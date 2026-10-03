@@ -34,6 +34,7 @@ Arquitectura (§26):
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from geas.models import (
@@ -756,12 +757,45 @@ class GeasMcp:
                 ],
             }
         )
+    @staticmethod
+    def _checkout_of(repo) -> str | None:
+        """Ruta del checkout local de un repositorio, o `None` si no se sabe.
+
+        La tabla `repositories` guarda `url` (un remoto, p. ej. SSH) pero **no**
+        una ruta de checkout, así que un repo `github` no tiene ninguna: el
+        servidor no puede Contestarlo sin que nadie se lo diga. Antes se usaba
+        `repo.path`, que no existe en el dataclass (§4 del ticket 6912f060:
+        `AttributeError` → 500), y el `LocalGitProvider()` sin ruta caía al cwd
+        del servicio — que es `~/.local/share/geas`, el directorio de datos, no
+        un checkout (§42: el contrato no se miente en silencio).
+
+        Solo se devuelve una ruta cuando se puede **demostrar**:
+          - `provider` local/self-hosted cuya `url` es una ruta existente con un
+            `.git` dentro.
+        Cualquier otro caso devuelve `None` y quien llama falla con un error
+        claro, en vez de responder `False` sobre un repositorio que nunca miró.
+        """
+        if (repo.provider or "local").lower() not in ("local", "self-hosted"):
+            return None
+        path = (repo.url or "").strip()
+        if not path:
+            return None
+        candidate = path.removeprefix("file://")
+        if os.path.isdir(os.path.join(candidate, ".git")):
+            return candidate
+        return None
+
     def has_unpublished(self, repository_id: str, branch: str | None = None) -> dict:
         """¿Hay trabajo sin publicar en este repo?
 
         «Sin publicar» = commits locales por delante de origin (ahead > 0). No
         obliga a hacer fetch: status() ya lee el upstream local si existe.
         Requiere permiso `git:read` sobre el repo.
+
+        `branch` se acepta por contrato pero **se ignora**: `status()` sólo
+        sabe de la rama actual. No se finge lo contrario (quedó como
+        `if branch: pass`, un no-op que parecía un olvido); dar respuesta por
+        cualquier rama es otro ticket.
         """
         if not repository_id:
             return _err("repository_id requerido")
@@ -771,53 +805,74 @@ class GeasMcp:
         denied = self._authorize(repo.organization_id, "git:read")
         if denied:
             return denied
+        checkout = self._checkout_of(repo)
+        if not checkout:
+            return _err(
+                f"No hay checkout local conocido de '{repo.name}' "
+                f"(provider={repo.provider or 'local'!r}, url={repo.url!r}); "
+                "GEAS no guarda rutas de checkout, así que no se puede responder "
+                "sin inventar (§42)"
+            )
         from geas.git import LocalGitProvider
 
         try:
-            g = LocalGitProvider(repo.path)
+            g = LocalGitProvider(checkout)
         except Exception as exc:  # noqa: BLE001
-            return _err(f"No es un repo Git en {repo.path}: {exc}")
+            return _err(f"No es un repo Git en {checkout}: {exc}")
         try:
-            if branch:
-                pass
             ahead = g.status().ahead
         except Exception as exc:  # noqa: BLE001
-            return _err(f"git status falló en {repo.path}: {exc}")
+            return _err(f"git status falló en {checkout}: {exc}")
         return _ok({"repository_id": repository_id, "ahead": ahead, "has_unpublished": ahead > 0})
 
     def is_published(self, commit: str, repository_id: str | None = None) -> dict:
         """¿Está este commit visible en alguna rama del remoto (origin)?
 
-        Requiere permiso `git:read` sobre algún repo (o el indicado).
+        Requiere permiso `git:read` sobre **el repo indicado**, y `repository_id`
+        es obligatorio: sin él no hay organización contra la que autorizar, y el
+        `LocalGitProvider()` caía al cwd del servicio sin comprobar nada
+        (§ ticket 6912f060). Además sólo se contesta si hay checkout local
+        conocido; si no, error claro en vez de un `False` inventado (§42).
         """
         if not commit:
             return _err("commit requerido")
-        org_id = None
-        repo_path = None
-        if repository_id:
-            repo = self.storage.get_repository(repository_id)
-            if not repo:
-                return _err(f"Repositorio no existe: {repository_id}")
-            org_id = repo.organization_id
-            repo_path = repo.path
-        if org_id:
-            denied = self._authorize(org_id, "git:read")
-            if denied:
-                return denied
+        if not repository_id:
+            return _err(
+                "repository_id requerido: sin él no se puede autorizar git:read "
+                "sobre una organización y se respondería mirando el repositorio "
+                "del servidor (bypass corregido en 6912f060)"
+            )
+        repo = self.storage.get_repository(repository_id)
+        if not repo:
+            return _err(f"Repositorio no existe: {repository_id}")
+        denied = self._authorize(repo.organization_id, "git:read")
+        if denied:
+            return denied
+        checkout = self._checkout_of(repo)
+        if not checkout:
+            return _err(
+                f"No hay checkout local conocido de '{repo.name}' "
+                f"(provider={repo.provider or 'local'!r}, url={repo.url!r}); "
+                "GEAS no guarda rutas de checkout, así que no se puede responder "
+                "sin inventar (§42)"
+            )
         from geas.git import LocalGitProvider
 
         try:
-            if repo_path:
-                g = LocalGitProvider(repo_path)
-            else:
-                g = LocalGitProvider()
+            g = LocalGitProvider(checkout)
         except Exception as exc:  # noqa: BLE001
             return _err(f"No se pudo inicializar git: {exc}")
         try:
             published = g.is_published(commit)
         except Exception as exc:  # noqa: BLE001
             return _err(f"git falló: {exc}")
-        return _ok({"commit": commit, "published": published})
+        return _ok(
+            {
+                "commit": commit,
+                "repository_id": repository_id,
+                "published": published,
+            }
+        )
 
 
     def get_permissions(self) -> dict:
@@ -826,8 +881,13 @@ class GeasMcp:
         GEAS-004: antes devolvia ALL_PERMISSIONS (el conjunto del perfil) a
         todos los actores, de modo que un agente creia poder llamar
         update_ticket y luego recibia FORBIDDEN. Ahora devuelve
-        storage.get_actor_permissions(actor, org): 21 al manager, 14 al
-        agente, los mismos numeros que geas_admin.py show.
+        storage.get_actor_permissions(actor, org), los mismos numeros que
+        geas_admin.py show.
+
+        Aquí no se escriben los numeros: cambian con el catálogo (§7) y una
+        cifra fija en el docstring envejece sin que nadie se entere — ya decía
+        "21 al manager, 14 al agente" cuando eran 23 y 17. Para el número
+        vigente, `geas_admin.py show` o `DEFAULT_ROLES` en geas/models.py.
         """
         org_id = self.org_id or (
             self.storage.list_organizations()[0].id
@@ -1248,7 +1308,11 @@ TOOLS = [
     },
     {
         "name": "is_published",
-        "description": "¿Está un commit visible en alguna rama del remoto (origin)?",
+        "description": (
+            "¿Está un commit visible en alguna rama del remoto (origin)? "
+            "repository_id es obligatorio (sin él no hay organización que "
+            "autorizar git:read) y hace falta un checkout local conocido"
+        ),
         "params": ["commit", "repository_id"],
     },
     {

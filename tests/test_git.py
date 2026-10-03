@@ -113,3 +113,81 @@ class TestGitProvider:
         assert ok is True
         # El contenido vuelve al estado de commit_before
         assert (repo / "file.txt").read_text() == "hola\n"
+
+
+class TestStatusNoConcatenaAheadYBehind:
+    """`status()` devolvía ahead=11 con "ahead 1, behind 1" (6912f060).
+
+    Hacía `int("".join(dígitos de todo el texto))`: con los dos contadores a
+    la vez unía "1" y "1". Un `has_unpublished` que dice 11 en vez de 1 no es
+    que dé un número raro: hace que un repositorio con un commit sin pushear
+    parezca once veces más sucio de lo que es, y el que lo use para decidir
+    si publica se equivoca de magnitud.
+    """
+
+    @pytest.mark.parametrize(
+        "linea,ahead,behind",
+        [
+            ("## main...origin/main [ahead 1, behind 1]", 1, 1),
+            ("## main...origin/main [ahead 3, behind 2]", 3, 2),
+            ("## main...origin/main [ahead 7]", 7, 0),
+            ("## main...origin/main [behind 4]", 0, 4),
+            ("## main...origin/main [ahead 12, behind 34]", 12, 34),
+            ("## main...origin/main", 0, 0),
+            ("## main...origin/main [gone]", 0, 0),
+        ],
+    )
+    def test_parsea_cada_contador_por_separado(self, monkeypatch, linea, ahead, behind):
+        class R:
+            stdout = linea + "\n"
+            returncode = 0
+
+        monkeypatch.setattr(
+            "geas.git.LocalGitProvider._run", lambda self, *a, **k: R()
+        )
+        s = LocalGitProvider("/no/importa").status()
+        assert (s.ahead, s.behind) == (ahead, behind)
+
+    def test_ahead_real_de_un_repo_de_verdad(self, tmp_path):
+        """Y no sólo el texto: un repo divergente de verdad da 1 y 1."""
+        import pathlib
+
+        env = {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+            "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(tmp_path),
+        }
+
+        def run(args, cwd):
+            return subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
+                                  capture_output=True)
+
+        bare, work = tmp_path / "b.git", tmp_path / "w"
+        work.mkdir()
+        run(["init", "-q", "--bare", "-b", "main", str(bare)], tmp_path)
+        for a in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e"],
+                  ["config", "user.name", "t"]):
+            run(a, work)
+
+        def commit(cwd, msg, txt):
+            pathlib.Path(cwd / "f.txt").write_text(txt)
+            run(["add", "-A"], cwd)
+            run(["commit", "-qm", msg], cwd)
+
+        commit(work, "c1", "a")
+        commit(work, "c2", "b")
+        run(["remote", "add", "origin", str(bare)], work)
+        run(["push", "-q", "-u", "origin", "main"], work)
+        commit(work, "c3", "c")
+
+        otro = tmp_path / "otro"
+        run(["clone", "-q", "-b", "main", str(bare), str(otro)], tmp_path)
+        for a in (["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+            run(a, otro)
+        commit(otro, "c9", "z")
+        run(["push", "-q", "origin", "main"], otro)
+        run(["fetch", "-q", "origin"], work)
+
+        s = LocalGitProvider(str(work)).status()
+        assert (s.ahead, s.behind) == (1, 1)
+        assert LocalGitProvider(str(work)).has_unpublished() is True
