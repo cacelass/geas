@@ -928,3 +928,84 @@ def _git_repo_real(path) -> None:
                    capture_output=True)
     subprocess.run(["git", "commit", "-qm", "c"], cwd=path, env=env, check=True,
                    capture_output=True)
+
+
+class TestListTicketsDevuelveAlgo_serializable:
+    """El tool de 675daf11 leía `t.assignee`, que no existe (6912f060).
+
+    `Ticket` tiene `assigned_actor_id`, no `assignee`, y la comprehension que
+    serializa estaba FUERA del `try`, así que en cuanto había un ticket que
+    devolver salía un 500 INTERNAL_ERROR sin más rastro. Como el servidor llevaba
+    25 h sirviendo código anterior, el tool aún no se había usado en producción:
+    el bug llevaba un despliegue entero escondido.
+
+    Este test falla con el código viejo, que es la prueba de que prueba algo.
+    """
+
+    def test_devuelve_los_tickets_de_la_org(self, mcp, storage, org):
+        creado = mcp.create_ticket(title="Uno de verdad")
+        r = mcp.list_tickets(org_id=org.id)
+        assert r["success"] is True
+        assert r["data"]["count"] == 1
+        t = r["data"]["tickets"][0]
+        assert t["id"] == creado["data"]["id"]
+        assert t["title"] == "Uno de verdad"
+        assert t["status"] == "FREE"
+
+    def test_el_asignado_viene_del_campo_que_existe(self, mcp, storage, org):
+        """`assignee` es el nombre de la clave; el dato es assigned_actor_id."""
+        creado = mcp.create_ticket(title="Con dueño")
+        tid = creado["data"]["id"]
+        storage.conn.execute(
+            "UPDATE tickets SET assigned_actor_id = ? WHERE id = ?", ("actor-7", tid)
+        )
+        t = mcp.list_tickets(org_id=org.id)["data"]["tickets"][0]
+        assert t["assignee"] == "actor-7"
+        assert t["assigned_actor_id"] == "actor-7"
+
+    def test_sin_asignar_cae_al_creador_y_siempre_es_cadena(self, mcp, org):
+        """Sin nadie asignado, `assignee` es el creador y nunca `None`."""
+        mcp.create_ticket(title="Sin dueño")
+        t = mcp.list_tickets(org_id=org.id)["data"]["tickets"][0]
+        assert isinstance(t["assignee"], str) and t["assignee"]
+        assert t["assignee"] != "None"
+
+    def test_filtra_por_estado(self, mcp, storage, org):
+        mcp.create_ticket(title="Libre")
+        storage.conn.execute(
+            "UPDATE tickets SET status = 'DONE' WHERE title = 'Libre'"
+        )
+        assert mcp.list_tickets(org_id=org.id, status="DONE")["data"]["count"] == 1
+        assert mcp.list_tickets(org_id=org.id, status="FREE")["data"]["count"] == 0
+
+    def test_el_estado_va_en_mayusculas_indistinto(self, mcp, storage, org):
+        mcp.create_ticket(title="X")
+        storage.conn.execute("UPDATE tickets SET status='DONE' WHERE title='X'")
+        assert mcp.list_tickets(org_id=org.id, status="done")["data"]["count"] == 1
+
+    def test_otra_org_es_forbidden_y_no_una_lista_vacia(self, mcp, storage, org):
+        """Aislar por org con FORBIDDEN, no con `count: 0`.
+
+        Una lista vacía confirmaría al que pregunta que la org existe; el 403
+        no le dice nada. Es la misma razon por la que el filtro de `org_id` se
+        comprueba antes de leer nada.
+        """
+        mcp.create_ticket(title="Mia")
+        otra = Organization(name="Otra")
+        storage.create_organization(otra)
+        r = mcp.list_tickets(org_id=otra.id)
+        assert r["success"] is False
+        assert r["error"] == "FORBIDDEN"
+
+    def test_todo_lo_devuelto_pasa_a_json(self, mcp, org):
+        """Un valor que no serializa es un 500 en la capa HTTP, no aquí."""
+        import json
+
+        mcp.create_ticket(title="Serializa")
+        r = mcp.list_tickets(org_id=org.id)
+        json.dumps(r)  # si algo no fuera serializable, reventaría aquí
+
+    def test_sin_org_id_falla(self, mcp):
+        r = mcp.list_tickets()
+        assert r["success"] is False
+        assert "org_id" in r["error"]

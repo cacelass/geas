@@ -731,32 +731,41 @@ class GeasMcp:
         denied = self._authorize(org_id, "ticket:read")
         if denied:
             return denied
+        # El try cubre TODA la función, no sólo la llamada a la BD. Antes de
+        # bd776b1 (675daf11) la llamada estaba protegida pero la comprehension
+        # de fuera no, así que un AttributeError ahí salía como 500
+        # INTERNAL_ERROR en vez de un error con nombre (6912f060).
         try:
             tickets = self.storage.list_tickets(org_id)
+            if status:
+                s = status.upper()
+                tickets = [t for t in tickets if t.status.value.upper() == s]
+            return _ok(
+                {
+                    "org_id": org_id,
+                    "count": len(tickets),
+                    "tickets": [
+                        {
+                            "id": t.id,
+                            "title": t.title,
+                            "status": t.status.value,
+                            "priority": t.priority,
+                            # La clave se llama `assignee`, pero el campo real
+                            # del dataclass Ticket es `assigned_actor_id`: se
+                            # leía `t.assignee`, que no existe, y eso reventaba
+                            # con 500 en cuanto había un ticket que devolver.
+                            "assignee": t.assigned_actor_id or t.creator_id or "",
+                            "assigned_actor_id": t.assigned_actor_id,
+                            "branch": t.branch,
+                            "repository_id": t.repository_id,
+                            "department_id": t.department_id,
+                        }
+                        for t in tickets
+                    ],
+                }
+            )
         except Exception as exc:  # noqa: BLE001
-            return _err(f"No se pudieron listar tickets: {exc}")
-        if status:
-            s = status.upper()
-            tickets = [t for t in tickets if t.status.value.upper() == s]
-        return _ok(
-            {
-                "org_id": org_id,
-                "count": len(tickets),
-                "tickets": [
-                    {
-                        "id": t.id,
-                        "title": t.title,
-                        "status": t.status.value,
-                        "priority": t.priority,
-                        "assignee": t.assignee,
-                        "branch": t.branch,
-                        "repository_id": t.repository_id,
-                        "department_id": t.department_id,
-                    }
-                    for t in tickets
-                ],
-            }
-        )
+            return _err(f"No se pudieron listar tickets: {type(exc).__name__}: {exc}")
     @staticmethod
     def _checkout_of(repo) -> str | None:
         """Ruta del checkout local de un repositorio, o `None` si no se sabe.
