@@ -19,12 +19,13 @@ geas.work — Comandos de trabajo de Geas (spec §34).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from geas.dbpath import resolve_db
+from geas.dbpath import DEFAULT_DATA_DIR, resolve_db, ResolveDbConfig
 from geas.git import LocalGitProvider
 from geas.models import (
     AuditLog,
@@ -65,16 +66,26 @@ class WorkContext:
         self.config_file.write_text("\n".join(lines) + "\n")
 
 
-def _storage(db_path: str | None = None) -> Storage:
+def _storage(
+    db_path: str | None = None,
+    db_config: ResolveDbConfig | None = None,
+) -> Storage:
     """Abre la BD de GEAS.
 
-    Sin argumentos, usa `resolve_db()`, que respeta `GEAS_DB` y
-    `GEAS_DATA_DIR` en vez de deducir `./geas.db` del cwd. `geas work` NO lleva
-    el guard de comensal: cuando se invoca desde `cli.main()` ya ha pasado, y
-    llamarla dos veces haria dos preguntas por lo mismo. El que se llama suelta
-    (API) es el que no tiene guard, y se documenta como tal (1ea3bcc7).
+    Si ``db_path`` se pasa, se usa directamente.
+    Si ``db_config`` se pasa, se usa ``resolve_db(db_config)``.
+    Si no se pasa nada, se llama ``resolve_db()`` sin argumentos
+    (lee de ``os.environ`` y disco, comportamiento heredado).
+    ``geas work`` NO lleva el guard de comensal: cuando se invoca desde
+    ``cli.main()`` ya ha pasado, y llamarla dos veces haria dos preguntas
+    por lo mismo. El que se llama suelta (API) es el que no tiene guard,
+    y se documenta como tal (1ea3bcc7).
     """
-    return Storage(db_path or resolve_db())
+    if db_path is not None:
+        return Storage(db_path)
+    if db_config is not None:
+        return Storage(resolve_db(db_config))
+    return Storage(resolve_db())
 
 
 def cmd_init(storage: Storage, args: list[str]) -> int:

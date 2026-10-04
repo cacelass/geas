@@ -16,3 +16,4 @@ build/
 geas.db-shm
 geas.db-wal
 geas.db
+.idea/

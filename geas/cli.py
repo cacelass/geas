@@ -41,9 +41,11 @@ from pathlib import Path
 
 from geas.dbpath import (
     comensal,
+    DEFAULT_DATA_DIR,
     lock_path,
     reservar_servidor,
     resolve_db,
+    ResolveDbConfig,
     servidor_vivo,
 )
 from geas.models import (
@@ -116,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     cmd = argv[0]
     args = argv[1:]
 
-    db_path = resolve_db()
+    db_config = _build_db_config()
+    db_path = resolve_db(db_config)
     os.environ.setdefault("GEAS_COMANDO", f"geas {cmd}".strip())
 
     if cmd == "where":
@@ -977,13 +980,23 @@ def _cmd_harness(storage: Storage, args: list[str]) -> int:
     return 0 if summary.result == "success" else 1
 
 
+def _build_db_config() -> ResolveDbConfig:
+    """Construye la config para resolve_db() leyendo de os.environ y disco."""
+    return ResolveDbConfig(
+        geas_db=os.environ.get("GEAS_DB") or None,
+        geas_data_dir=os.environ.get("GEAS_DATA_DIR") or None,
+        instalada_existe=DEFAULT_DATA_DIR.joinpath("geas.db").exists(),
+    )
+
+
 def _cmd_where() -> int:
     """Dice donde esta la BD y quien la tiene abierta. Sin adivinar (1ea3bcc7).
 
     No abre la BD a proposito: este comando se consulta precisamente cuando algo
     va mal con ella.
     """
-    db_path = resolve_db()
+    config = _build_db_config()
+    db_path = resolve_db(config)
     print(f"BD:       {db_path}")
     print(f"existe:   {'si' if db_path.exists() else 'NO'}")
     print(f"lock:     {lock_path(db_path)}")
@@ -991,9 +1004,9 @@ def _cmd_where() -> int:
     print(f"servidor: {'vivo, no abras la BD a mano' if vivo else 'ninguno'}")
     origen = (
         "GEAS_DB"
-        if os.environ.get("GEAS_DB")
+        if config.geas_db
         else "GEAS_DATA_DIR"
-        if os.environ.get("GEAS_DATA_DIR")
+        if config.geas_data_dir
         else f"{db_path} (instalada)"
         if db_path != Path("geas.db")
         else "./geas.db (relativo al cwd: por eso es peligroso)"

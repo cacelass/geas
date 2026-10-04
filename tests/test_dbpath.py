@@ -28,6 +28,7 @@ from geas.dbpath import (
     lock_path,
     reservar_servidor,
     resolve_db,
+    ResolveDbConfig,
     servidor_vivo,
 )
 
@@ -46,30 +47,57 @@ def _sin_instalacion(monkeypatch, tmp_path):
 
 
 class TestDondeEstaLaBd:
-    def test_geas_db_manda_sobre_todo(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("GEAS_DATA_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("GEAS_DB", str(tmp_path / "otro.db"))
-        assert resolve_db() == tmp_path / "otro.db"
+    def test_geas_db_gana_sobre_todo(self, tmp_path):
+        config = ResolveDbConfig(
+            geas_db=str(tmp_path / "otro.db"),
+            geas_data_dir=str(tmp_path / "data"),
+            instalada_existe=True,
+        )
+        assert resolve_db(config) == tmp_path / "otro.db"
 
-    def test_geas_data_dir_es_el_siguiente(self, monkeypatch, tmp_path):
-        # El fixture pone GEAS_DB para que ningun test toque la BD instalada;
-        # aqui se prueba la regla de abajo, asi que hay que quitarlo.
-        monkeypatch.delenv("GEAS_DB", raising=False)
-        monkeypatch.setenv("GEAS_DATA_DIR", str(tmp_path / "data"))
-        assert resolve_db() == tmp_path / "data" / "geas.db"
+    def test_geas_data_dir_si_no_hay_geas_db(self, tmp_path):
+        config = ResolveDbConfig(
+            geas_db=None,
+            geas_data_dir=str(tmp_path / "data"),
+            instalada_existe=True,
+        )
+        assert resolve_db(config) == tmp_path / "data" / "geas.db"
 
-    def test_si_no_hay_entorno_usa_la_instalada(self, monkeypatch, tmp_path):
-        """El caso que arregla la BD fantasma: sin env, la instancia real."""
-        monkeypatch.delenv("GEAS_DB", raising=False)
-        monkeypatch.setattr(dbpath, "DEFAULT_DATA_DIR", tmp_path / "instalada")
-        (tmp_path / "instalada").mkdir()
-        (tmp_path / "instalada" / "geas.db").write_text("")
-        assert resolve_db() == tmp_path / "instalada" / "geas.db"
+    def test_instalada_si_no_hay_entorno(self, tmp_path):
+        """Sin vars de entorno, la instalada gana al fallback."""
+        config = ResolveDbConfig(
+            geas_db=None,
+            geas_data_dir=None,
+            instalada_existe=True,
+        )
+        assert resolve_db(config) == dbpath.DEFAULT_DATA_DIR / "geas.db"
 
-    def test_sin_instalada_cae_al_cwd_como_siempre(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("GEAS_DB", raising=False)
-        monkeypatch.setattr(dbpath, "DEFAULT_DATA_DIR", tmp_path / "no-existe")
-        assert resolve_db() == Path("geas.db")
+    def test_sin_nada_cae_al_cwd(self):
+        """Fallback: si no hay nada configurado, ./geas.db."""
+        config = ResolveDbConfig(
+            geas_db=None,
+            geas_data_dir=None,
+            instalada_existe=False,
+        )
+        assert resolve_db(config) == Path("geas.db")
+
+    def test_geas_db_vacio_pasa_al_siguiente(self, tmp_path):
+        """Variable vacía cuenta como no definida."""
+        config = ResolveDbConfig(
+            geas_db="",
+            geas_data_dir=str(tmp_path / "data"),
+            instalada_existe=True,
+        )
+        assert resolve_db(config) == tmp_path / "data" / "geas.db"
+
+    def test_data_dir_vacio_pasa_a_instalada(self, tmp_path):
+        """GEAS_DATA_DIR vacía, sigue a la instalada."""
+        config = ResolveDbConfig(
+            geas_db=None,
+            geas_data_dir="",
+            instalada_existe=True,
+        )
+        assert resolve_db(config) == dbpath.DEFAULT_DATA_DIR / "geas.db"
 
     def test_el_lock_va_contiguo_a_la_bd(self):
         assert lock_path("/x/geas.db") == Path("/x/geas.db.server")

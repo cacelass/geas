@@ -9,6 +9,9 @@ forma **atómica y verificable**, a una sola pregunta:
 
 > **Quién puede hacer qué, sobre qué recurso, cuándo puede hacerlo y qué dependencias existen.**
 
+> **Nota:** GEAS utiliza `fcntl.flock()` para la gestión de locks de la base de
+> datos, por lo que **solo es compatible con GNU/Linux**.
+
 ## Cómo funciona, en 30 segundos
 
 ```

@@ -36,6 +36,7 @@ import errno
 import fcntl
 import os
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -48,34 +49,64 @@ DEFAULT_DATA_DIR = Path.home() / ".local" / "share" / "geas"
 DB_NAME = "geas.db"
 
 
+@dataclass(frozen=True)
+class ResolveDbConfig:
+    """Configuración para decidir dónde está la BD de GEAS.
+
+    Quien construya este objeto (CLI, tests, scripts) decide cómo obtener
+    los valores. ``resolve_db()`` solo decide cuál usar, sin leer de
+    ``os.environ`` ni tocar el disco — es una función pura.
+    """
+
+    geas_db: str | None
+    """Ruta explícita a un fichero de BD. Si no es None, se usa esta."""
+    geas_data_dir: str | None
+    """Directorio de datos. Si no es None, se usa ``<dir>/geas.db``."""
+    instalada_existe: bool
+    """``True`` si ``~/.local/share/geas/geas.db`` existe en disco."""
+
+
 def lock_path(db_path: Path | str) -> Path:
     """Fichero de lock que acompaña a esta BD."""
     return Path(str(db_path) + LOCK_SUFFIX)
 
 
-def resolve_db() -> Path:
+def resolve_db(config: ResolveDbConfig | None = None) -> Path:
     """Resuelve la BD de GEAS. En un solo sitio, y con un orden explícito.
 
-    1. `GEAS_DB`: un fichero, para quien sepa exactamente qué quiere.
-    2. `GEAS_DATA_DIR/geas.db`: la variable que ya usaban los scripts de shell.
-    3. `~/.local/share/geas/geas.db`, **si existe**: la instancia instalada.
-    4. `./geas.db`: el comportamiento de toda la vida, que es lo que usan los
-       tests y una instalación nueva.
+    Prioridad (de mayor a menor):
+
+    1. ``GEAS_DB`` — un fichero, para quien sepa exactamente qué quiere.
+    2. ``GEAS_DATA_DIR/geas.db`` — la variable que ya usaban los scripts de shell.
+    3. ``~/.local/share/geas/geas.db`` **si existe** — la instancia instalada.
+    4. ``./geas.db`` — si ninguna opción está disponible.
 
     El paso 3 es el que cambia el comportamiento de verdad: antes, desde la raíz
-    de un repo se abría un `./geas.db` fantasma y vacío; ahora se abre la
+    de un repo se abría un ``./geas.db`` fantasma y vacío; ahora se abre la
     instancia real y, si tiene un servidor vivo, el guard lo dice (G1) en vez de
     dejarte trabajar en silencio sobre una BD que no es la de nadie.
+
+    Si no se pasa ``config`` se lee de ``os.environ`` y se consulta el disco
+    (comportamiento por defecto, mantenido para compatibilidad).
     """
-    explicito = os.environ.get("GEAS_DB")
-    if explicito:
-        return Path(explicito)
-    directorio = os.environ.get("GEAS_DATA_DIR")
-    if directorio:
-        return Path(directorio) / DB_NAME
-    instalada = DEFAULT_DATA_DIR / DB_NAME
-    if instalada.exists():
-        return instalada
+    if config is None:
+        explicito = os.environ.get("GEAS_DB")
+        if explicito:
+            return Path(explicito)
+        directorio = os.environ.get("GEAS_DATA_DIR")
+        if directorio:
+            return Path(directorio) / DB_NAME
+        instalada = DEFAULT_DATA_DIR / DB_NAME
+        if instalada.exists():
+            return instalada
+        return Path(DB_NAME)
+
+    if config.geas_db:
+        return Path(config.geas_db)
+    if config.geas_data_dir:
+        return Path(config.geas_data_dir) / DB_NAME
+    if config.instalada_existe:
+        return DEFAULT_DATA_DIR / DB_NAME
     return Path(DB_NAME)
 
 
