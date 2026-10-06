@@ -1069,121 +1069,144 @@ def _cmd_repo(storage: Storage, args: list[str]) -> int:
     return 1
 
 
+def _ticket_list(storage: Storage, args: list[str]) -> int:
+    if len(args) < 2:
+        print("Uso: geas ticket list <org_id> [free|busy]")
+        return 1
+    org_id = args[1]
+    status_filter = args[2] if len(args) > 2 and args[2] not in ("free", "busy") else None
+    availability = args[2] if len(args) > 2 and args[2] in ("free", "busy") else None
+    tickets = storage.list_tickets(org_id, status=status_filter)
+    if not tickets:
+        print("No hay tickets.")
+        return 0
+
+    now = _now()
+    for t in tickets:
+        _print_ticket(storage, t, now, availability)
+    return 0
+
+
+def _print_ticket(storage: Storage, ticket, now: str, availability: str | None) -> None:
+    # §15: un ticket está O C U P A D O si al menos uno de sus recursos
+    # tiene un lock activo; LIBRE si todos sus recursos están disponibles.
+    locks = [_lock_active(storage, rid, now) for rid in ticket.resources]
+    locks = [l for l in locks if l is not None]
+    if availability == "free" and locks:
+        return
+    if availability == "busy" and not locks:
+        return
+    if availability is None:
+        # §34 contrato previo: `ticket list <org>` sin filtro → sin badges
+        print(f"  {ticket.id[:8]}  [{ticket.status.value:12}]  {ticket.title}")
+        return
+    badge = _ticket_badge(storage, locks)
+    print(f"  {ticket.id[:8]}  [{ticket.status.value:12}]  {ticket.title}{badge}")
+
+
+def _ticket_badge(storage: Storage, locks: list[ResourceLock | None]) -> str:
+    if locks:
+        lock = locks[0]
+        actor = storage.get_user(lock.actor_id)
+        actor_name = actor.name if actor else lock.actor_id[:8]
+        return f"  [ocupado desde {lock.created_at} por {actor_name}]"
+    return "  [libre]"
+
+
+def _ticket_show(storage: Storage, args: list[str]) -> int:
+    if len(args) < 2:
+        print("Uso: geas ticket show <ticket_id>")
+        return 1
+    ticket = storage.get_ticket(args[1])
+    if not ticket:
+        print(f"Ticket no encontrado: {args[1]}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "id": ticket.id,
+                "title": ticket.title,
+                "description": ticket.description,
+                "status": ticket.status.value,
+                "priority": ticket.priority,
+                "assigned": ticket.assigned_actor_id,
+                "branch": ticket.branch,
+                "commit_before": ticket.commit_before,
+                "commit_after": ticket.commit_after,
+                "dependencies": ticket.dependencies,
+                "resources": ticket.resources,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _ticket_create(storage: Storage, args: list[str]) -> int:
+    if len(args) < 3:
+        print("Uso: geas ticket create <org_id> <title> [description]")
+        return 1
+    desc = args[3] if len(args) > 3 else ""
+    ticket = Ticket(
+        organization_id=args[1],
+        title=args[2],
+        description=desc,
+    )
+    storage.create_ticket(ticket)
+    print(f"Ticket creado: {ticket.id[:8]}  {ticket.title}")
+    return 0
+
+
+def _ticket_start(storage: Storage, args: list[str]) -> int:
+    if len(args) < 2:
+        print("Uso: geas ticket start <ticket_id> [commit_before] [branch]")
+        return 1
+    commit_before = args[2] if len(args) > 2 else ""
+    branch = args[3] if len(args) > 3 else ""
+    ok = storage.start_ticket(args[1], commit_before, branch)
+    if ok:
+        print(f"Ticket {args[1][:8]} iniciado.")
+    else:
+        print(f"No se pudo iniciar ticket {args[1][:8]}.", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _ticket_complete(storage: Storage, args: list[str]) -> int:
+    if len(args) < 2:
+        print("Uso: geas ticket complete <ticket_id> [commit_after]")
+        return 1
+    commit_after = args[2] if len(args) > 2 else ""
+    ok = storage.complete_ticket(args[1], commit_after)
+    if ok:
+        print(f"Ticket {args[1][:8]} completado.")
+    else:
+        print(f"No se pudo completar ticket {args[1][:8]}.", file=sys.stderr)
+        return 1
+    return 0
+
+
+_TICKET_DISPATCH = {
+    "list": _ticket_list,
+    "show": _ticket_show,
+    "create": _ticket_create,
+    "start": _ticket_start,
+    "complete": _ticket_complete,
+}
+
+
 def _cmd_ticket(storage: Storage, args: list[str]) -> int:
     if not args:
         print("Uso: geas ticket list|show|create|start|complete ...")
         return 1
 
     sub = args[0]
-    if sub == "list":
-        if len(args) < 2:
-            print("Uso: geas ticket list <org_id> [free|busy]")
-            return 1
-        org_id = args[1]
-        status_filter = args[2] if len(args) > 2 and args[2] not in ("free", "busy") else None
-        availability = args[2] if len(args) > 2 and args[2] in ("free", "busy") else None
-        tickets = storage.list_tickets(org_id, status=status_filter)
-        if not tickets:
-            print("No hay tickets.")
-            return 0
-
-        now = _now()
-        for t in tickets:
-            # §15: un ticket está O C U P A D O si al menos uno de sus recursos
-            # tiene un lock activo; LIBRE si todos sus recursos están disponibles.
-            locks = [_lock_active(storage, rid, now) for rid in t.resources]
-            locks = [l for l in locks if l is not None]
-            if availability == "free" and locks:
-                continue
-            if availability == "busy" and not locks:
-                continue
-            if availability is None:
-                # §34 contrato previo: `ticket list <org>` sin filtro → sin badges
-                print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}")
-                continue
-            if locks:
-                lock = locks[0]
-                actor = storage.get_user(lock.actor_id)
-                actor_name = actor.name if actor else lock.actor_id[:8]
-                badge = f"  [ocupado desde {lock.created_at} por {actor_name}]"
-            else:
-                badge = "  [libre]"
-            print(f"  {t.id[:8]}  [{t.status.value:12}]  {t.title}{badge}")
-        return 0
-
-    elif sub == "show":
-        if len(args) < 2:
-            print("Uso: geas ticket show <ticket_id>")
-            return 1
-        ticket = storage.get_ticket(args[1])
-        if not ticket:
-            print(f"Ticket no encontrado: {args[1]}", file=sys.stderr)
-            return 1
-        print(
-            json.dumps(
-                {
-                    "id": ticket.id,
-                    "title": ticket.title,
-                    "description": ticket.description,
-                    "status": ticket.status.value,
-                    "priority": ticket.priority,
-                    "assigned": ticket.assigned_actor_id,
-                    "branch": ticket.branch,
-                    "commit_before": ticket.commit_before,
-                    "commit_after": ticket.commit_after,
-                    "dependencies": ticket.dependencies,
-                    "resources": ticket.resources,
-                },
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
-        return 0
-
-    elif sub == "create":
-        if len(args) < 3:
-            print("Uso: geas ticket create <org_id> <title> [description]")
-            return 1
-        desc = args[3] if len(args) > 3 else ""
-        ticket = Ticket(
-            organization_id=args[1],
-            title=args[2],
-            description=desc,
-        )
-        storage.create_ticket(ticket)
-        print(f"Ticket creado: {ticket.id[:8]}  {ticket.title}")
-        return 0
-
-    elif sub == "start":
-        if len(args) < 2:
-            print("Uso: geas ticket start <ticket_id> [commit_before] [branch]")
-            return 1
-        commit_before = args[2] if len(args) > 2 else ""
-        branch = args[3] if len(args) > 3 else ""
-        ok = storage.start_ticket(args[1], commit_before, branch)
-        if ok:
-            print(f"Ticket {args[1][:8]} iniciado.")
-        else:
-            print(f"No se pudo iniciar ticket {args[1][:8]}.", file=sys.stderr)
-            return 1
-        return 0
-
-    elif sub == "complete":
-        if len(args) < 2:
-            print("Uso: geas ticket complete <ticket_id> [commit_after]")
-            return 1
-        commit_after = args[2] if len(args) > 2 else ""
-        ok = storage.complete_ticket(args[1], commit_after)
-        if ok:
-            print(f"Ticket {args[1][:8]} completado.")
-        else:
-            print(f"No se pudo completar ticket {args[1][:8]}.", file=sys.stderr)
-            return 1
-        return 0
-
-    else:
+    handler = _TICKET_DISPATCH.get(sub)
+    if handler is None:
         print(f"Subcomando desconocido: ticket {sub}", file=sys.stderr)
         return 1
+    return handler(storage, args)
 
 
 def _cmd_resource(storage: Storage, args: list[str]) -> int:
