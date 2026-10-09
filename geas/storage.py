@@ -912,7 +912,7 @@ class Storage:
         now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE tickets SET status = 'DONE', completed_at = ?, "
-            "commit_after = ?, result = ? WHERE id = ?",
+            "commit_after = ?, result = ? WHERE id = ? AND status = 'IN_PROGRESS'",
             (now, commit_after, result, ticket_id),
         )
         self._commit()

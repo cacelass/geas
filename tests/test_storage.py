@@ -382,6 +382,51 @@ class TestTickets:
         assert found.commit_after == "b71c4de"
         assert found.completed_at is not None
 
+    def test_complete_ticket_rejects_non_in_progress(self):
+        """§41: complete_ticket debe rechazar tickets que no esten IN_PROGRESS.
+
+        Análogo al guard de start_ticket (§39) que exige status='FREE'.
+        Sin este guard, un ticket FREE/DONE se cerraría de forma
+        irreversible (bug B1 de BUGS-001).
+        """
+        from geas.storage import Storage
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = Path(f.name)
+
+        storage = Storage(db_path)
+        org = Organization(name="org-test")
+        storage.create_organization(org)
+
+        t_free = Ticket(organization_id=org.id, title="Ticket libre")
+        storage.create_ticket(t_free)
+
+        # FREE → NO se puede completar
+        ok = storage.complete_ticket(t_free.id, commit_after="abc", result="OK")
+        assert ok is False, "complete_ticket debe fallar para ticket FREE"
+        assert storage.get_ticket(t_free.id).status == TicketStatus.FREE
+
+        # DONE → NO se puede completar (ya cerrado)
+        t_done = Ticket(organization_id=org.id, title="Ya cerrado")
+        storage.create_ticket(t_done)
+        storage.start_ticket(t_done.id)
+        storage.complete_ticket(t_done.id, commit_after="abc")
+        ok = storage.complete_ticket(t_done.id, commit_after="abc", result="OK")
+        assert ok is False, "complete_ticket debe fallar para ticket DONE"
+
+        # IN_PROGRESS → SÍ se puede completar
+        t_ok = Ticket(organization_id=org.id, title="En curso OK")
+        storage.create_ticket(t_ok)
+        storage.start_ticket(t_ok.id)
+        ok = storage.complete_ticket(t_ok.id, commit_after="def", result="OK")
+        assert ok is True
+        assert storage.get_ticket(t_ok.id).status == TicketStatus.DONE
+        assert storage.get_ticket(t_ok.id).commit_after == "def"
+
+        db_path.unlink(missing_ok=True)
+
     def test_dependencies(self, storage, org):
         t1 = Ticket(organization_id=org.id, title="Dependencia base")
         t2 = Ticket(organization_id=org.id, title="Depende de t1")
