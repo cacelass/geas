@@ -816,6 +816,6 @@ class Storage:
         return audit
 
     def list_audit(self, org_id: str, limit: int = 100) -> list[AuditLog]:
-        # audit_log no tiene organization_id, devolver todos los ultimos
-        docs = self.db["audit_log"].sort("timestamp", -1).limit(limit)
+        # audit_log no tiene organization_id, devolver todos los últimos
+        docs = self.db["audit_log"].find().sort("timestamp", -1).limit(limit)
         return [_audit(d) for d in docs]
