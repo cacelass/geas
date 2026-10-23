@@ -258,6 +258,12 @@ class Storage:
                 return resolved
         return short_id
 
+    def _resolve_org(self, org_id: str):
+        """Resuelve org_id y devuelve el objeto Organization o None."""
+        resolved = self._resolve_org_id(org_id)
+        org = self.get_organization(resolved)
+        return org if org else self.get_organization_by_name(org_id)
+
     # ── Organizations ─────────────────────────────────────────────────
 
     def create_organization(self, org: Organization) -> Organization:
@@ -267,6 +273,10 @@ class Storage:
         return org
 
     def get_organization(self, org_id: str) -> Organization | None:
+        # Intentar resolución de prefijo
+        resolved = _resolve_id("organizations", org_id, self.db)
+        if resolved:
+            org_id = resolved
         d = self.db["organizations"].find_one({"id": org_id})
         return _org(d) if d else None
 
