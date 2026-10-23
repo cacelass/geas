@@ -107,6 +107,54 @@ def _require_profile(storage: Storage, org_id: str, feature: str, label: str) ->
     return True
 
 
+def _detect_backend(db_path: Path) -> str:
+    """Detecta el backend desde config/geas.yml o GEAS_BACKEND."""
+    # Prioridad: variable de entorno
+    env_backend = os.environ.get("GEAS_BACKEND", "").strip().lower()
+    if env_backend in ("sqlite", "mongodb", "mongo", "postgres"):
+        return "mongodb" if env_backend in ("mongodb", "mongo") else env_backend
+    # Buscar config/geas.yml en ubicaciones comunes
+    search_paths = [
+        Path.cwd() / "config" / "geas.yml",
+        db_path.parent.parent / "config" / "geas.yml",
+    ]
+    # Buscar en padres del cwd
+    for parent in Path.cwd().parents:
+        search_paths.append(parent / "config" / "geas.yml")
+    # Buscar en ~/aiagents/config/geas.yml
+    search_paths.append(Path.home() / "aiagents" / "config" / "geas.yml")
+    # Buscar en ~/geas/config/geas.yml
+    search_paths.append(Path.home() / "geas" / "config" / "geas.yml")
+    # Buscar en cualquier directorio "aiagents" o "geas" en los padres
+    for parent in Path.cwd().parents:
+        for dirname in ("aiagents", "geas", "meshharmes"):
+            search_paths.append(parent / dirname / "config" / "geas.yml")
+    # Buscar en cualquier directorio "config" en los padres
+    for parent in Path.cwd().parents:
+        config_dir = parent / "config"
+        if config_dir.exists() and (config_dir / "geas.yml").exists():
+            search_paths.append(config_dir / "geas.yml")
+    # Unicos, en orden
+    seen = set()
+    unique_paths = []
+    for p in search_paths:
+        fp = p.resolve()
+        if fp not in seen:
+            seen.add(fp)
+            unique_paths.append(p)
+    for candidate in unique_paths:
+        if candidate.exists():
+            for line in candidate.read_text().splitlines():
+                line_s = line.strip()
+                if line_s.startswith("database:"):
+                    b = line_s.split(":", 1)[1].strip().strip("\"'")
+                    if b in ("mongodb", "mongo"):
+                        return "mongodb"
+                    elif b == "postgres":
+                        return "postgres"
+    return "sqlite"
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -128,26 +176,42 @@ def main(argv: list[str] | None = None) -> int:
         # puede preguntar en el momento en que hace falta no sirve.
         return _cmd_where()
 
+    backend = _detect_backend(db_path)
+
     if cmd == "serve":
         # El servidor no es un comensal: se RESERVA la BD mientras vive, y se
         # hace atras si otro ya la tiene. Sin esto, un segundo `geas serve` se
         # queda con la BD abierta aunque pierda el puerto.
-        with reservar_servidor(db_path):
-            storage = Storage(db_path)
+        if backend == "mongodb":
+            storage = Storage(db_path, backend=backend)
             try:
                 return _cmd_serve(storage, args)
             finally:
                 storage.close()
+        else:
+            with reservar_servidor(db_path):
+                storage = Storage(db_path, backend=backend)
+                try:
+                    return _cmd_serve(storage, args)
+                finally:
+                    storage.close()
 
     # Cualquier otro comando se hace atras si hay un servidor con la BD abierta
     # (1ea3bcc7). Antes ese guard solo existia en `geas_admin.py`, que vive en
     # el repo de edgebet: la propia CLI de GEAS se saltaba la regla.
-    with comensal(db_path):
-        storage = Storage(db_path)
+    if backend == "mongodb":
+        storage = Storage(db_path, backend=backend)
         try:
             return _despachar(cmd, args, storage)
         finally:
             storage.close()
+    else:
+        with comensal(db_path):
+            storage = Storage(db_path, backend=backend)
+            try:
+                return _despachar(cmd, args, storage)
+            finally:
+                storage.close()
 
 
 def _despachar(cmd: str, args: list[str], storage: Storage) -> int:

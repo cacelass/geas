@@ -35,14 +35,28 @@ from geas.models import (
 
 
 class Storage:
-    """Almacén SQLite para Geas."""
+    """Almacén multi-backend para Geas.
+
+    Soporta ``sqlite``, ``mongodb`` y (futuro) ``postgres``.
+    El backend se decide por el argumento ``backend`` o leyendo
+    ``database`` de ``config/geas.yml``.
+    """
 
     def __init__(self, db_path: str | Path = "geas.db", backend: str = "sqlite"):
-        self.db_path = Path(db_path)
-        # §42: backend declarado por el perfil (§1046 — los agentes
-        # no acceden directamente a PostgreSQL). SQLite es el
-        # default retrocompatible; pedir postgres sin driver
-        # falla claro en vez de caer en silencio a SQLite.
+        # Detectar config de geas.yml si existe
+        _yml = Path(db_path).parent.parent / "config" / "geas.yml" if isinstance(db_path, Path) else Path.cwd() / "config" / "geas.yml"
+        if not _yml.exists():
+            _yml = Path.cwd() / "config" / "geas.yml"
+        if _yml.exists() and backend == "sqlite":
+            for _line in _yml.read_text().splitlines():
+                _line_s = _line.strip()
+                if _line_s.startswith("database:"):
+                    _b = _line_s.split(":", 1)[1].strip().strip("\"'")
+                    if _b in ("mongodb", "mongo"):
+                        backend = "mongodb"
+                    elif _b == "postgres":
+                        backend = "postgres"
+                    break
         self.backend = backend
         if backend == "postgres":
             raise NotImplementedError(
@@ -51,9 +65,17 @@ class Storage:
                 "§35/§36). Añade geas[postgres] a tus deps e inyecta la "
                 "conexión para cablearlo."
             )
-        # El servidor HTTP atiende en un hilo distinto al de inicialización.
-        # La API usa HTTPServer (un solo consumidor), y SQLite sigue
-        # serializando escrituras mediante BEGIN IMMEDIATE para los locks.
+        if backend == "mongodb":
+            from geas.storage_mongo import Storage as _MongoStorage
+            _mongo = _MongoStorage("", "geas")  # URI se lee desde .env
+            self._inner = _mongo
+            self.db_path = Path(db_path) if isinstance(db_path, Path) else Path(db_path)
+            self.conn = None  # No usado con MongoDB
+            self._depth = 0
+            return
+
+        # SQLite (default)
+        self.db_path = Path(db_path)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -1133,6 +1155,36 @@ class Storage:
             (limit,),
         ).fetchall()
         return [_row_to_audit(r) for r in rows]
+
+    # ── Delegacion MongoDB ────────────────────────────────────────────
+    # Cuando backend=="mongodb", __getattribute__ reenvia TODO a _mongo.
+
+    @property
+    def _mongo(self):
+        if self.backend == "mongodb" and hasattr(self, "_inner"):
+            return self._inner
+        return None
+
+    def __getattribute__(self, name: str):
+        # Evitar recursión con atributos internos
+        if name in ("_mongo", "_inner", "backend", "conn", "db_path", "_depth"):
+            return object.__getattribute__(self, name)
+        if name == "close":
+            return object.__getattribute__(self, name)
+        # Si es MongoDB, delegar al backend interno
+        if object.__getattribute__(self, "backend") == "mongodb":
+            _mongo = object.__getattribute__(self, "_mongo")
+            if _mongo is not None:
+                mongo_attr = getattr(_mongo, name, None)
+                if mongo_attr is not None:
+                    return mongo_attr
+        return object.__getattribute__(self, name)
+
+    def close(self):
+        if self.backend == "mongodb" and self._mongo:
+            self._mongo.close()
+        elif self.conn:
+            self.conn.close()
 
 
 # ─── Schema SQL ─────────────────────────────────────────────────────────────
