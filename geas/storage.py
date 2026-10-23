@@ -34,29 +34,71 @@ from geas.models import (
 )
 
 
+def _detect_backend_for_storage(cwd: Path) -> str:
+    """Detecta backend para Storage: geas.yml > sqlite.
+    
+    .env con MONGODB_URI SOLO se usa si config/geas.yml ya dice mongodb.
+    Esto evita que el .env active MongoDB por accidente.
+    """
+    import os
+    # 1. Variable de entorno explícita
+    env_backend = os.environ.get("GEAS_BACKEND", "").strip().lower()
+    if env_backend in ("sqlite", "mongodb", "mongo", "postgres"):
+        return "mongodb" if env_backend in ("mongodb", "mongo") else env_backend
+    
+    # 2. config/geas.yml (decisión explícita del usuario)
+    yml_backend = "sqlite"  # default
+    for yml_path in [
+        cwd / "config" / "geas.yml",
+        cwd.parent / "config" / "geas.yml",
+        Path.home() / "aiagents" / "config" / "geas.yml",
+        Path.home() / "geas" / "config" / "geas.yml",
+    ]:
+        if yml_path.exists():
+            for line in yml_path.read_text().splitlines():
+                line_s = line.strip()
+                if line_s.startswith("database:"):
+                    b = line_s.split(":", 1)[1].strip().strip("\"'")
+                    if b in ("mongodb", "mongo"):
+                        yml_backend = "mongodb"
+                    elif b == "postgres":
+                        yml_backend = "postgres"
+                    break
+            if yml_backend != "sqlite":
+                break
+    
+    # 3. Si yml dice mongodb, verificar .env
+    if yml_backend == "mongodb":
+        for env_path in [
+            cwd / ".env",
+            cwd.parent / ".env",
+            Path.home() / "aiagents" / ".env",
+            Path.home() / "geas" / ".env",
+        ]:
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    if line.strip().startswith("MONGODB_URI="):
+                        return "mongodb"
+    
+    return yml_backend  # sqlite o lo que diga el yml
+
+
 class Storage:
     """Almacén multi-backend para Geas.
 
-    Soporta ``sqlite``, ``mongodb`` y (futuro) ``postgres``.
-    El backend se decide por el argumento ``backend`` o leyendo
-    ``database`` de ``config/geas.yml``.
+    Soporta ``sqlite`` (default), ``mongodb`` y (futuro) ``postgres``.
+    El backend se decide por:
+    1. ``GEAS_BACKEND`` variable de entorno
+    2. ``database`` en ``config/geas.yml``
+    3. Si existe ``MONGODB_URI`` en ``.env``, usa mongodb
+    4. Default: sqlite
     """
 
     def __init__(self, db_path: str | Path = "geas.db", backend: str = "sqlite"):
-        # Detectar config de geas.yml si existe
-        _yml = Path(db_path).parent.parent / "config" / "geas.yml" if isinstance(db_path, Path) else Path.cwd() / "config" / "geas.yml"
-        if not _yml.exists():
-            _yml = Path.cwd() / "config" / "geas.yml"
-        if _yml.exists() and backend == "sqlite":
-            for _line in _yml.read_text().splitlines():
-                _line_s = _line.strip()
-                if _line_s.startswith("database:"):
-                    _b = _line_s.split(":", 1)[1].strip().strip("\"'")
-                    if _b in ("mongodb", "mongo"):
-                        backend = "mongodb"
-                    elif _b == "postgres":
-                        backend = "postgres"
-                    break
+        # Si no se especifica backend, detectar automáticamente
+        if backend == "sqlite":
+            backend = _detect_backend_for_storage(Path(db_path) if isinstance(db_path, Path) else Path.cwd())
+        
         self.backend = backend
         if backend == "postgres":
             raise NotImplementedError(

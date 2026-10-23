@@ -108,41 +108,30 @@ def _require_profile(storage: Storage, org_id: str, feature: str, label: str) ->
 
 
 def _detect_backend(db_path: Path) -> str:
-    """Detecta el backend desde config/geas.yml o GEAS_BACKEND."""
-    # Prioridad: variable de entorno
+    """Detecta el backend desde GEAS_BACKEND, config/geas.yml o .env."""
+    # Prioridad 1: variable de entorno explícita
     env_backend = os.environ.get("GEAS_BACKEND", "").strip().lower()
     if env_backend in ("sqlite", "mongodb", "mongo", "postgres"):
         return "mongodb" if env_backend in ("mongodb", "mongo") else env_backend
-    # Buscar config/geas.yml en ubicaciones comunes
-    search_paths = [
+    
+    # Prioridad 2: .env (lectura de MONGODB_URI implica mongodb si existe)
+    for env_candidate in [
+        Path.cwd() / ".env",
+        db_path.parent.parent / ".env",
+        Path.home() / "aiagents" / ".env",
+        Path.home() / "geas" / ".env",
+    ]:
+        if env_candidate.exists():
+            for line in env_candidate.read_text().splitlines():
+                line_s = line.strip()
+                if line_s.startswith("MONGODB_URI="):
+                    return "mongodb"  # .env con MONGODB_URI → mongodb
+    
+    # Prioridad 3: config/geas.yml
+    for candidate in [
         Path.cwd() / "config" / "geas.yml",
         db_path.parent.parent / "config" / "geas.yml",
-    ]
-    # Buscar en padres del cwd
-    for parent in Path.cwd().parents:
-        search_paths.append(parent / "config" / "geas.yml")
-    # Buscar en ~/aiagents/config/geas.yml
-    search_paths.append(Path.home() / "aiagents" / "config" / "geas.yml")
-    # Buscar en ~/geas/config/geas.yml
-    search_paths.append(Path.home() / "geas" / "config" / "geas.yml")
-    # Buscar en cualquier directorio "aiagents" o "geas" en los padres
-    for parent in Path.cwd().parents:
-        for dirname in ("aiagents", "geas", "meshharmes"):
-            search_paths.append(parent / dirname / "config" / "geas.yml")
-    # Buscar en cualquier directorio "config" en los padres
-    for parent in Path.cwd().parents:
-        config_dir = parent / "config"
-        if config_dir.exists() and (config_dir / "geas.yml").exists():
-            search_paths.append(config_dir / "geas.yml")
-    # Unicos, en orden
-    seen = set()
-    unique_paths = []
-    for p in search_paths:
-        fp = p.resolve()
-        if fp not in seen:
-            seen.add(fp)
-            unique_paths.append(p)
-    for candidate in unique_paths:
+    ]:
         if candidate.exists():
             for line in candidate.read_text().splitlines():
                 line_s = line.strip()
@@ -152,6 +141,47 @@ def _detect_backend(db_path: Path) -> str:
                         return "mongodb"
                     elif b == "postgres":
                         return "postgres"
+    
+    # Buscar en padres del cwd
+    for parent in Path.cwd().parents:
+        # .env en padres
+        env_parent = parent / ".env"
+        if env_parent.exists():
+            for line in env_parent.read_text().splitlines():
+                line_s = line.strip()
+                if line_s.startswith("MONGODB_URI="):
+                    return "mongodb"
+        # config/geas.yml en padres
+        yml = parent / "config" / "geas.yml"
+        if yml.exists():
+            for line in yml.read_text().splitlines():
+                line_s = line.strip()
+                if line_s.startswith("database:"):
+                    b = line_s.split(":", 1)[1].strip().strip("\"'")
+                    if b in ("mongodb", "mongo"):
+                        return "mongodb"
+                    elif b == "postgres":
+                        return "postgres"
+        # directorios conocidos
+        for dirname in ("aiagents", "geas", "meshharmes"):
+            env_dir = parent / dirname / ".env"
+            if env_dir.exists():
+                for line in env_dir.read_text().splitlines():
+                    line_s = line.strip()
+                    if line_s.startswith("MONGODB_URI="):
+                        return "mongodb"
+            yml_dir = parent / dirname / "config" / "geas.yml"
+            if yml_dir.exists():
+                for line in yml_dir.read_text().splitlines():
+                    line_s = line.strip()
+                    if line_s.startswith("database:"):
+                        b = line_s.split(":", 1)[1].strip().strip("\"'")
+                        if b in ("mongodb", "mongo"):
+                            return "mongodb"
+                        elif b == "postgres":
+                            return "postgres"
+    
+    # Default: SQLite
     return "sqlite"
 
 
