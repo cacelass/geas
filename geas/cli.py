@@ -33,6 +33,7 @@ Uso:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -40,12 +41,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from geas.dbpath import (
-    comensal,
     DEFAULT_DATA_DIR,
+    ResolveDbConfig,
+    comensal,
+    is_mongo,
     lock_path,
+    redact_uri,
     reservar_servidor,
     resolve_db,
-    ResolveDbConfig,
+    resolve_target,
     servidor_vivo,
 )
 from geas.models import (
@@ -64,7 +68,7 @@ from geas.models import (
     User,
     Visibility,
 )
-from geas.storage import Storage
+from geas.storage import Storage, abrir_storage
 
 
 def _now() -> str:
@@ -119,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     args = argv[1:]
 
     db_config = _build_db_config()
-    db_path = resolve_db(db_config)
+    target = resolve_target(db_config)
+    db_path = target if not is_mongo(target) else resolve_db(db_config)
     os.environ.setdefault("GEAS_COMANDO", f"geas {cmd}".strip())
 
     if cmd == "where":
@@ -129,6 +134,14 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_where()
 
     if cmd == "serve":
+        if is_mongo(target):
+            # Atlas no necesita (ni admite) el flock local: la atomicidad la
+            # pone el servidor de Mongo, no una exclusión entre procesos.
+            storage = abrir_storage(target)
+            try:
+                return _cmd_serve(storage, args)
+            finally:
+                storage.close()
         # El servidor no es un comensal: se RESERVA la BD mientras vive, y se
         # hace atras si otro ya la tiene. Sin esto, un segundo `geas serve` se
         # queda con la BD abierta aunque pierda el puerto.
@@ -142,8 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     # Cualquier otro comando se hace atras si hay un servidor con la BD abierta
     # (1ea3bcc7). Antes ese guard solo existia en `geas_admin.py`, que vive en
     # el repo de edgebet: la propia CLI de GEAS se saltaba la regla.
-    with comensal(db_path):
-        storage = Storage(db_path)
+    guard = contextlib.nullcontext() if is_mongo(target) else comensal(db_path)
+    with guard:
+        storage = abrir_storage(target)
         try:
             return _despachar(cmd, args, storage)
         finally:
@@ -288,7 +302,9 @@ def _cmd_org(storage: Storage, args: list[str]) -> int:
             return 1
         print(f"id: {org.id}")
         print(f"name: {org.name}")
-        print(f"profile: {org.profile}  (backend declarado: {backend_for(org.profile)})")
+        print(
+            f"profile: {org.profile}  (backend declarado: {backend_for(org.profile)})"
+        )
         print(f"components: {', '.join(components(org.profile))}")
         print(f"departments: {len(storage.list_departments(org.id))}")
         print(f"repositories: {len(storage.list_repositories(org.id))}")
@@ -361,7 +377,7 @@ def _cmd_enterprise(storage: Storage, args: list[str]) -> int:
         print(f"  generado: {path}")
     print(f"estructura generada: {len(written)} ficheros en {root_dir}/")
     print("siguiente:")
-    print(f"  geas init \"{org_name}\" --profile enterprise")
+    print(f'  geas init "{org_name}" --profile enterprise')
     print(f"  geas sync {root_dir}" if root_dir != "." else "  geas sync .")
     return 0
 
@@ -408,9 +424,7 @@ def _cmd_sync(storage: Storage, args: list[str]) -> int:
     unsupported = sorted(present - sections_for(product))
     if unsupported:
         needs = (
-            "enterprise"
-            if {"departments", "policies"} & set(unsupported)
-            else "team"
+            "enterprise" if {"departments", "policies"} & set(unsupported) else "team"
         )
         print(
             "SECTION_NOT_SUPPORTED: el perfil "
@@ -513,7 +527,10 @@ def _cmd_sync(storage: Storage, args: list[str]) -> int:
                 )
             )
             created += 1
-            print(f"+ repositorio {repo.name}" + (f" @ {repo.department}" if repo.department else ""))
+            print(
+                f"+ repositorio {repo.name}"
+                + (f" @ {repo.department}" if repo.department else "")
+            )
         elif (
             existing.url != repo.url
             or existing.provider != repo.provider
@@ -678,9 +695,7 @@ def _cmd_role(storage: Storage, args: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
-        role = Role(
-            organization_id=args[1], name=args[2], permissions=list(requested)
-        )
+        role = Role(organization_id=args[1], name=args[2], permissions=list(requested))
         storage.create_role(role)
         print(f"Rol creado: {role.id[:8]}  {role.name}")
         return 0
@@ -762,7 +777,9 @@ def _cmd_agent(storage: Storage, args: list[str]) -> int:
         return 0
     if sub == "create":
         if len(args) < 4:
-            print("Uso: geas agent create <org_id> <name> <provider> <model> [dept_id] [role_id]")
+            print(
+                "Uso: geas agent create <org_id> <name> <provider> <model> [dept_id] [role_id]"
+            )
             return 1
         if not _require_profile(storage, args[1], "ai_agents", "agentes"):
             return 1
@@ -993,9 +1010,18 @@ def _cmd_where() -> int:
     """Dice donde esta la BD y quien la tiene abierta. Sin adivinar (1ea3bcc7).
 
     No abre la BD a proposito: este comando se consulta precisamente cuando algo
-    va mal con ella.
+    va mal con ella. Con MongoDB no hay fichero ni flock: se dice la URI (sin
+    la contraseña) y que el servidor es el de Atlas.
     """
     config = _build_db_config()
+    target = resolve_target(config)
+    if is_mongo(target):
+        print(f"BD:       {redact_uri(str(target))} (mongodb)")
+        print("existe:   remota (el cluster responde o falla al conectar)")
+        print("lock:     no aplica: MongoDB gestiona la concurrencia")
+        print("servidor: externo (Atlas/replica set)")
+        print("origen:   " + ("GEAS_DB" if config.geas_db else "desconocido"))
+        return 0
     db_path = resolve_db(config)
     print(f"BD:       {db_path}")
     print(f"existe:   {'si' if db_path.exists() else 'NO'}")
@@ -1013,7 +1039,9 @@ def _cmd_where() -> int:
     )
     print(f"origen:   {origen}")
     if not vivo and os.environ.get("GEAS_ALLOW_LIVE") == "1":
-        print("aviso:    GEAS_ALLOW_LIVE=1 esta puesto: el guard de la BD esta saltado.")
+        print(
+            "aviso:    GEAS_ALLOW_LIVE=1 esta puesto: el guard de la BD esta saltado."
+        )
     return 0
 
 
@@ -1074,7 +1102,9 @@ def _ticket_list(storage: Storage, args: list[str]) -> int:
         print("Uso: geas ticket list <org_id> [free|busy]")
         return 1
     org_id = args[1]
-    status_filter = args[2] if len(args) > 2 and args[2] not in ("free", "busy") else None
+    status_filter = (
+        args[2] if len(args) > 2 and args[2] not in ("free", "busy") else None
+    )
     availability = args[2] if len(args) > 2 and args[2] in ("free", "busy") else None
     tickets = storage.list_tickets(org_id, status=status_filter)
     if not tickets:

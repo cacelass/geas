@@ -48,6 +48,30 @@ LOCK_SUFFIX = ".server"
 DEFAULT_DATA_DIR = Path.home() / ".local" / "share" / "geas"
 DB_NAME = "geas.db"
 
+MONGO_PREFIXES = ("mongodb://", "mongodb+srv://")
+
+
+def is_mongo(target: object) -> bool:
+    """¿El destino es una URL de MongoDB y no una ruta de fichero?
+
+    ``GEAS_DB`` puede ser un fichero o una URI de Atlas. La distinción se
+    hace aquí, en un solo sitio, porque pasar la URI por ``Path()`` la
+    destrozaría (``mongodb+srv:/``).
+    """
+    return str(target).strip().startswith(MONGO_PREFIXES)
+
+
+def redact_uri(uri: str) -> str:
+    """Oculta la contraseña de una URI de Mongo para logs y `geas where`."""
+    scheme, sep, rest = uri.partition("://")
+    if not sep or "@" not in rest:
+        return uri
+    creds, _, host = rest.partition("@")
+    user, colon, _password = creds.partition(":")
+    if not colon:
+        return uri
+    return f"{scheme}://{user}:****@{host}"
+
 
 @dataclass(frozen=True)
 class ResolveDbConfig:
@@ -108,6 +132,18 @@ def resolve_db(config: ResolveDbConfig | None = None) -> Path:
     if config.instalada_existe:
         return DEFAULT_DATA_DIR / DB_NAME
     return Path(DB_NAME)
+
+
+def resolve_target(config: ResolveDbConfig | None = None) -> str | Path:
+    """Como ``resolve_db``, pero devuelve la URI intacta si es MongoDB.
+
+    ``resolve_db`` siempre devuelve ``Path`` y eso vale para SQLite. Una URI
+    de Atlas tiene que llegar al backend sin pasar por ``Path()``.
+    """
+    explicit = os.environ.get("GEAS_DB") if config is None else config.geas_db
+    if explicit and is_mongo(explicit):
+        return explicit
+    return resolve_db(config)
 
 
 def _abrir_lock(db_path: Path | str) -> IO[str]:

@@ -8,6 +8,9 @@ ejecuciones y auditoría.
 
 from __future__ import annotations
 
+import os
+import uuid
+
 import pytest
 
 from geas.models import (
@@ -31,9 +34,34 @@ from geas.models import (
 )
 from geas.storage import Storage
 
+# Tests que hablan SQL (conn, triggers) no tienen sentido contra MongoDB:
+# el contrato equivalente se prueba en tests/test_storage_mongo.py.
+SQLITE_ONLY = pytest.mark.skipif(
+    os.environ.get("GEAS_TEST_BACKEND", "sqlite") == "mongo",
+    reason="ejercita sqlite3 directamente (conn/trigger)",
+)
+
 
 @pytest.fixture
 def storage(tmp_path):
+    """SQLite por defecto; MongoDB si ``GEAS_TEST_BACKEND=mongo``.
+
+    La misma batería corre contra los dos backends: es la forma barata de
+    comprobar que MongoDB no cambia el contrato (claim atómico, locks todos o
+    ninguno, dependencias). Sin ``GEAS_TEST_MONGO_URL`` los tests se saltan
+    en vez de fingir que pasan.
+    """
+    if os.environ.get("GEAS_TEST_BACKEND", "sqlite") == "mongo":
+        url = os.environ.get("GEAS_TEST_MONGO_URL", "")
+        if not url:
+            pytest.skip("GEAS_TEST_MONGO_URL no está definida")
+        from geas.storage_mongo import MongoStorage
+
+        s = MongoStorage(url, database=f"geas_test_{uuid.uuid4().hex[:10]}")
+        yield s
+        s.client.drop_database(s.database)
+        s.close()
+        return
     s = Storage(tmp_path / "test.db")
     yield s
     s.close()
@@ -389,9 +417,10 @@ class TestTickets:
         Sin este guard, un ticket FREE/DONE se cerraría de forma
         irreversible (bug B1 de BUGS-001).
         """
-        from geas.storage import Storage
-        from pathlib import Path
         import tempfile
+        from pathlib import Path
+
+        from geas.storage import Storage
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
@@ -597,9 +626,7 @@ def test_update_organization_fields_converge_descripcion_y_perfil(storage, org):
 def test_lookups_declarativos_por_nombre(storage, org, dept, repo):
     assert storage.get_department_by_name(org.id, dept.name).id == dept.id
     assert storage.get_department_by_name(org.id, "otro") is None
-    assert (
-        storage.get_department_by_name(org.id, dept.name, parent_id="x-none") is None
-    )
+    assert storage.get_department_by_name(org.id, dept.name, parent_id="x-none") is None
     # §43: la unicidad de repos es por (org, nombre, departamento)
     assert (
         storage.get_repository_by_name(org.id, repo.name, repo.department_id).id
@@ -666,7 +693,7 @@ def test_la_transaccion_confirma_todo_junto(storage, org):
         raise RuntimeError("falla a mitad")
 
     assert storage.get_ticket(t.id) is None
-    assert storage.conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
+    assert storage.list_tickets(org.id) == []
 
 
 def test_la_transaccion_confirma_si_no_hay_fallo(storage, org):
@@ -675,14 +702,20 @@ def test_la_transaccion_confirma_si_no_hay_fallo(storage, org):
     with storage.transaction():
         storage.create_ticket(t)
         storage.create_audit(
-            AuditLog(actor_id="a", action="CREATE_TICKET", resource_type="ticket",
-                     resource_id=t.id)
+            AuditLog(
+                actor_id="a",
+                action="CREATE_TICKET",
+                resource_type="ticket",
+                resource_id=t.id,
+            )
         )
 
     assert storage.get_ticket(t.id) is not None
     assert storage._depth == 0
-    # Ya no hay transaccion abierta: un commit suelto vuelve a confirmar.
-    storage._commit()
+    # Ya no hay transaccion abierta: la siguiente escritura suelta no se cae.
+    storage.create_ticket(
+        Ticket(organization_id=org.id, title="Suelto", creator_id="a")
+    )
     assert storage.get_ticket(t.id) is not None
 
 
@@ -698,6 +731,7 @@ def test_transacciones_anidadas_no_abren_dos_transacciones(storage, org):
     assert storage._depth == 0
 
 
+@SQLITE_ONLY
 def test_un_rollback_dentro_de_la_transaccion_propag(storage, org):
     """Un rollback explicito tampoco debe prometer nada."""
     with pytest.raises(RuntimeError, match="huerfano"), storage.transaction():
@@ -709,6 +743,7 @@ def test_un_rollback_dentro_de_la_transaccion_propag(storage, org):
     assert storage.conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 0
 
 
+@SQLITE_ONLY
 def test_borrar_un_ticket_deja_rastro_en_el_audit_log(storage, org):
     """GEAS-005: el trigger convierte un DELETE en una linea de audit."""
     t = Ticket(organization_id=org.id, title="Se puede borrar", creator_id="a")
@@ -730,22 +765,33 @@ def test_borrar_un_ticket_deja_rastro_en_el_audit_log(storage, org):
     assert '"Se puede borrar"' in row["metadata"]
 
 
+@SQLITE_ONLY
 def test_el_trigger_no_inventa_borrados_que_no_pasan(storage, org):
     """Sin DELETE no hay lineas DELETE_TICKET: el audit no se rellena solo."""
-    storage.create_ticket(Ticket(organization_id=org.id, title="Se queda", creator_id="a"))
+    storage.create_ticket(
+        Ticket(organization_id=org.id, title="Se queda", creator_id="a")
+    )
 
-    assert storage.conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE_TICKET'"
-    ).fetchone()[0] == 0
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE_TICKET'"
+        ).fetchone()[0]
+        == 0
+    )
 
 
+@SQLITE_ONLY
 def test_el_audit_log_no_afirma_tickets_que_la_tabla_no_tiene(storage, org):
     """La invariante de GEAS-005, comprobable: cero auditorias huerfanas."""
     t = Ticket(organization_id=org.id, title="Auditado", creator_id="a")
     storage.create_ticket(t)
     storage.create_audit(
-        AuditLog(actor_id="a", action="CREATE_TICKET", resource_type="ticket",
-                 resource_id=t.id)
+        AuditLog(
+            actor_id="a",
+            action="CREATE_TICKET",
+            resource_type="ticket",
+            resource_id=t.id,
+        )
     )
 
     def huerfanos():
@@ -761,12 +807,16 @@ def test_el_audit_log_no_afirma_tickets_que_la_tabla_no_tiene(storage, org):
     storage._commit()
     assert storage.get_ticket(t.id) is None
     assert huerfanos() == 1
-    assert storage.conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE_TICKET' AND resource_id = ?",
-        (t.id,),
-    ).fetchone()[0] == 1
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE_TICKET' AND resource_id = ?",
+            (t.id,),
+        ).fetchone()[0]
+        == 1
+    )
 
 
+@SQLITE_ONLY
 def test_el_trigger_ya_existe_en_una_base_antigua(storage, org):
     """Una base creada antes del trigger lo recibe al abrirse (CREATE IF NOT EXISTS)."""
     storage.create_ticket(Ticket(organization_id=org.id, title="Viejo", creator_id="a"))
@@ -775,7 +825,10 @@ def test_el_trigger_ya_existe_en_una_base_antigua(storage, org):
 
     storage._create_tables()  # lo que hace Storage.__init__ al abrir la BD
 
-    assert storage.conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
-        "AND name='tickets_delete_deja_rastro'"
-    ).fetchone()[0] == 1
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+            "AND name='tickets_delete_deja_rastro'"
+        ).fetchone()[0]
+        == 1
+    )

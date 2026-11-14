@@ -19,13 +19,12 @@ geas.work — Comandos de trabajo de Geas (spec §34).
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from geas.dbpath import DEFAULT_DATA_DIR, resolve_db, ResolveDbConfig
+from geas.dbpath import ResolveDbConfig, resolve_target
 from geas.git import LocalGitProvider
 from geas.models import (
     AuditLog,
@@ -33,7 +32,7 @@ from geas.models import (
     ResourceLock,
     TicketStatus,
 )
-from geas.storage import Storage
+from geas.storage import Storage, abrir_storage
 
 
 class WorkContext:
@@ -82,10 +81,10 @@ def _storage(
     y se documenta como tal (1ea3bcc7).
     """
     if db_path is not None:
-        return Storage(db_path)
+        return abrir_storage(db_path)
     if db_config is not None:
-        return Storage(resolve_db(db_config))
-    return Storage(resolve_db())
+        return abrir_storage(resolve_target(db_config))
+    return abrir_storage(resolve_target())
 
 
 def cmd_init(storage: Storage, args: list[str]) -> int:

@@ -123,7 +123,9 @@ class Storage:
         # §43: perfil de despliegue (individual|team|enterprise). Las bases
         # creadas antes de los perfiles no tienen la columna; sin migración,
         # una actualización perdería el perfil de la organización.
-        org_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(organizations)")}
+        org_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(organizations)")
+        }
         if "profile" not in org_columns:
             self.conn.execute(
                 "ALTER TABLE organizations ADD COLUMN profile TEXT DEFAULT 'individual'"
@@ -136,7 +138,14 @@ class Storage:
         self.conn.execute(
             "INSERT INTO organizations (id, name, description, created_at, active, "
             "profile) VALUES (?, ?, ?, ?, ?, ?)",
-            (org.id, org.name, org.description, org.created_at, org.active, org.profile),
+            (
+                org.id,
+                org.name,
+                org.description,
+                org.created_at,
+                org.active,
+                org.profile,
+            ),
         )
         self._commit()
         return org
@@ -150,8 +159,7 @@ class Storage:
     def get_organization_by_name(self, name: str) -> Organization | None:
         """§43: lookup para `geas sync` — idempotente por nombre."""
         row = self.conn.execute(
-            "SELECT * FROM organizations WHERE name = ? "
-            "ORDER BY created_at LIMIT 1",
+            "SELECT * FROM organizations WHERE name = ? ORDER BY created_at LIMIT 1",
             (name,),
         ).fetchone()
         return _row_to_org(row) if row else None
@@ -1133,6 +1141,24 @@ class Storage:
             (limit,),
         ).fetchall()
         return [_row_to_audit(r) for r in rows]
+
+
+# ─── Fábrica de almacenes ───────────────────────────────────────────────────
+
+
+def abrir_storage(target: str | Path) -> Storage:
+    """Abre el almacén que corresponda al destino.
+
+    ``GEAS_DB`` puede ser un fichero SQLite o una URI de MongoDB. La fábrica
+    vive aquí para que CLI y ``work`` no tengan que saber cuál es cuál.
+    """
+    from geas.dbpath import is_mongo
+
+    if is_mongo(target):
+        from geas.storage_mongo import MongoStorage
+
+        return MongoStorage(str(target))
+    return Storage(target)
 
 
 # ─── Schema SQL ─────────────────────────────────────────────────────────────
